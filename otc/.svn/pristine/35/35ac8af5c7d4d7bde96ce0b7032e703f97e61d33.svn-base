@@ -1,0 +1,97 @@
+package main
+
+import (
+	"github.com/Workiva/go-datastructures/queue"
+	zmq "github.com/pebbe/zmq3"
+	log "github.com/thinkboy/log4go"
+	"github.com/vmihailenco/msgpack"
+	"github.com/widuu/goini"
+	"os"
+	"quant/emsmodule/adapter/ufxapi"
+	emsbase "quant/emsmodule/base"
+	rms "quant/rmsmodule"
+	"strings"
+)
+
+var (
+	adaptersMap = make(map[string]emsbase.ITarde)
+	conf        *goini.Config
+)
+
+func init() {
+	log.LoadConfiguration("./conf/quant_log.xml")
+	conf = goini.SetConfig("./conf/quant.ini")
+
+	adapters := conf.GetStr("emsmodule", "trade_adapter")
+	for _, name := range strings.Split(adapters, "|") {
+		if name == "ufxapi" {
+			var itrade emsbase.ITarde = new(ufxapi.UFXApi)
+			itrade.Init()
+			adaptersMap[name] = itrade
+		}
+	}
+}
+
+type emsModule struct {
+	receiveAddr   string
+	emsModulePull *zmq.Socket
+	portqueue     *queue.RingBuffer
+	algorithm     AlgorithmAdmin
+}
+
+func (ems *emsModule) init() {
+	ems.receiveAddr = conf.GetStr("emsmodule", "pull_addr")
+	ems.portqueue = queue.NewRingBuffer(10000)
+	ems.algorithm = AlgorithmAdmin{ems.portqueue}
+	ems.connect()
+	go ems.algorithm.Run()
+}
+
+func (ems *emsModule) connect() {
+	log.Info("EMS listen to %s", ems.receiveAddr)
+	var err error
+	ems.emsModulePull, err = zmq.NewSocket(zmq.PULL)
+	if err != nil {
+		log.Error("EMS create zmq pull failed.")
+		os.Exit(-1)
+		return
+	}
+	err = ems.emsModulePull.Bind(ems.receiveAddr)
+	if err != nil {
+		log.Error("EMS create zmq pull bind failed. Addr: %s", ems.receiveAddr)
+		os.Exit(-1)
+		return
+	}
+}
+
+func (ems *emsModule) Release() {
+	ems.emsModulePull.Close()
+}
+
+func (ems *emsModule) Run(wc chan int) {
+	for {
+		data, _ := ems.emsModulePull.Recv(0)
+		var port emsbase.Portfolio
+		err := msgpack.Unmarshal([]byte(data), &port)
+		if err != nil {
+			log.Error("EMS msgpack unmarshal portfolio failed.")
+		} else {
+			// arithmetic trade
+			if Isvaild, _ := rms.CheckPort(&port); Isvaild {
+				log.Info("%v", port)
+				ems.portqueue.Put(port)
+			}
+		}
+	}
+	wc <- 0
+}
+
+func main() {
+	log.Info("EMS Start")
+	ems := new(emsModule)
+	ems.init()
+	wc := make(chan int)
+	go ems.Run(wc)
+	<-wc
+	log.Info("EMS Exit")
+}

@@ -1,0 +1,24 @@
+package main
+
+import (
+	log "github.com/thinkboy/log4go"
+	// hqmodule "quant/hqmodule/hqservice"
+	"quant/strategy/deltahedge"
+)
+
+func main() {
+	log.LoadConfiguration("./conf/quant_log.xml")
+	log.Info("Main start ")
+
+	// hqmodule.StartHqservice()
+
+	dh := new(strategy.DeltaHedge)
+	dh.Init()
+
+	waitchan := make(chan int)
+	go dh.Run(waitchan)
+
+	log.Info("Main thread wait for exit")
+	<-waitchan
+	log.Info("Main Exit")
+}

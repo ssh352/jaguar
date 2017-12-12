@@ -1,0 +1,176 @@
+package com.gf.otc.neeq.common.ufx;
+
+import java.util.List;
+import java.util.Map;
+
+import com.hundsun.t2sdk.interfaces.share.dataset.IDatasets;
+
+
+public interface UfxService {
+
+	/**
+	 * 用默认用户登陆
+	 * 调用功能号10001
+	 * @return 用户token
+	 */
+	public String login() throws Exception;
+	
+	public String login(String operator_no, String password) throws Exception;
+	
+	/**
+	 * 登出
+	 * 调用功能号10002
+	 * @param user_token 令牌号
+	 */
+	public void logout(String user_token) throws Exception;
+	
+	/**
+	 * 委托
+	 * 调用功能号91011
+	 * @param user_token 令牌号
+	 * @param stock_code 股票代码
+	 * @param buy_price 买入价格
+	 * @param buy_amount 买入数量
+	 * @param sell_price 卖出价格
+	 * @param sell_amount 卖出数量
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> entrust(String user_token, String stock_code, double buy_price, int buy_amount, double sell_price, int sell_amount, String strategyName) throws Exception;
+	
+	/**
+	 * 撤单
+	 * 调用功能号91102
+	 * @param user_token 令牌号
+	 * @param batch_no 委托批号
+	 * @return
+	 * @throws Exception
+	 */
+	public IDatasets withdraw(String user_token, String batch_no) throws Exception;
+	
+	/**
+	 * 委托查询
+	 * 调用功能号32006
+	 * @param user_token 令牌号
+	 * @param batch_no 委托批号
+	 * @param stock_code 证券代码
+	 * @param entrust_state_list 委托状态
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> queryEntrust(String user_token, String batch_no, String stock_code, String entrust_state_list) throws Exception;
+	
+	/**
+	 * 成交查询
+	 * 调用功能号33001
+	 * @param user_token 令牌号
+	 * @param entrust_no 委托序号
+	 * @param deal_no 成交编号
+	 * @param stock_code 证券代码
+	 * @param entrust_direction 委托方向
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> queryDeal(String user_token, String entrust_no, String deal_no, String stock_code, String entrust_direction) throws Exception;
+	
+	/**
+	 * 股票持仓查询
+	 * @param user_token 令牌号
+	 * @param stock_code 证券代码
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> queryPosition(String user_token, String stock_code) throws Exception;
+	
+	
+	/**
+	 * 普通买卖委托
+	 * 调用功能号91001
+	 * 传参[必填：user_token, batch_no, account_code/asset_no/combi_no(至少传一), market_no, stock_code, entrust_direction, entrust_price, entrust_amount;
+	 * 	        可选：stockholder_id, report_seat,  price_type, extsystem_id, third_reff, mac_address,
+	 * 		  ip_address, hd_volserial, op_station, terminal_info]		
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_91001(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 委托撤单
+	 * 调用功能号91101
+	 * 传参 [必填：user_token, entrust_no;
+	 * 	         可选： mac_address, ip_address, hd_volserial, op_station, terminal_info]
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_91101(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 证券持仓查询
+	 * 调用功能号31001
+	 * 传参[必填：user_token, asset_no/combi_no(至少传一);
+	 * 	        可选： account_code, market_no, stock_code, stockholder_id, hold_seat]
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_31001(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 证券委托查询
+	 * 调用功能号32001
+	 * 传参[必填：user_token, asset_no/combi_no(至少传一);
+	 * 	        可选： batch_no, entrust_no, account_code, stockholder_id, market_no,
+	 * 				stock_code, entrust_direction, entrust_state_list, extsystem_id, third_reff, position_str, request_num]
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_32001(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 证券历史委托查询
+	 * 调用功能号32101
+	 * 传参params[必填：user_token, start_date, end_date, account_code;
+	 * 			可选： batch_no, entrust_no, asset_no, combi_no, stockholder_id,
+	 * 				market_no, stock_code, entrust_direction, entrust_state_list, extsystem_id, third_reff, position_str, request_num]
+	 * @param 
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_32101(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 证券成交查询
+	 * 调用功能号33001
+	 * 传参[必填：user_token, asset_no/combi_no(至少传一);
+	 * 	       可选： account_code, entrust_no, deal_no, stockholder_id, market_no, stock_code,
+	 * 				entrust_direction, extsystem_id, third_reff, poistion_str, request_num]
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_33001(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 证券历史成交查询
+	 * 调用功能号33101
+	 * 传参[必填：user_token, start_date, end_date, asset_no/combi_no(至少传一);
+	 * 	       可选： account_code, entrust_serial_list, deal_no, stockholder_id,
+	 * 				market_no, stock_code, entrust_direction, extsystem_id, third_reff, position_str, request_num]
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_33101(Map<String, String> params) throws Exception;
+	
+	/**
+	 * 恒生通用接口
+	 * @param params - 传参
+	 * @param func_id - 功能号
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> hs_common(Map<String, String> params, Integer func_id) throws Exception;
+}

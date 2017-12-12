@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<t2sdk-configuration>
+	<performance   heartbeatTime="400"
+		           acquireConnWaitTime="3000"  registerTime="5" reconnInterval="3"
+		           localServerName="mctest"   callBackTime="50000" enmCompress="true" />
+    <parents>    
+ 		<parent  parentName="as_ufx" safeLevel="NONE">
+			<limit licenseFile="classpath:license.dat" encrypt="HSBlowfish" />
+			<members>
+				<!-- <member no="5" address="10.2.117.173" port="9001" -->
+				<member no="5" address="10.2.130.189" port="18801"
+				  charset="gbk" poolSize="1" />
+			</members>
+		</parent>
+		<parent  parentName="ar_mc" safeLevel="NONE">
+			<limit licenseFile="classpath:license.dat" encrypt="HSBlowfish" />
+			<members>
+				<!-- <member no="5" address="10.2.117.173" port="9009" charset="gbk" poolSize="1" /> -->
+				<member no="5" address="10.2.130.189" port="19009" charset="gbk" poolSize="1" />
+			</members>
+		</parent>
+	</parents>
+	<callBackMethods>
+		<!-- 业务回调 -->
+		<method id="5" className="com.gf.otc.neeq.strategy.positionsmanager.CallBack" />
+		<!-- MC使用回调 必须配置 -->
+		<method id="-1" className="com.hundsun.mcapi.MCT2sdkCallback" />
+	</callBackMethods>
+	<logAdapter className="com.hundsun.t2sdk.impl.util.CommonLogAdapter" />
+	
+	<!--  消息中心必须增加下面的配置，否则无法订阅  -->
+	<!--  parentName：上级连接名字  cachedir：本地缓存的消息目录 inittimeout：初始化的超时时间   -->
+	<!--  type：1只完成订阅，2只发布 0既能订阅也能发布   -->
+
+	<mc parentName="ar_mc" type="0" cachedir="mc" inittimeout="3000">
+
+		<!--  订阅者信息配置  -->
+		<!--  subname：订阅者名字  subcallback：订阅者的回调类，必须有，否则构造失败 timeout：订阅者的初始化超时时间   -->
+		<subscriber  subname="demo"  subcallback="com.gf.otc.neeq.strategy.positionsmanager.McCallBack"  timeout="3000"/>
+	
+		<!--  发布者信息配置  -->
+		<!--  msgCount：本地缓存的消息数量  -->
+		<publisher pubname="demo" msgCount="200" isResetNo="false"/>
+	
+		<!--  mc日志目录配置  -->
+		<mclog dir="mclog"/>
+	</mc> 
+</t2sdk-configuration>

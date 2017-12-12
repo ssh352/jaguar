@@ -1,0 +1,17 @@
+DES_KEY = GFOTC_NEEQTRADE
+
+#UFX settings----------------------------
+UFX.operator_no = 1000
+#UFX.operator_password = FP4CIs8xgvg=
+UFX.operator_password = FP4CIs8xgvg=
+UFX.account_code = 1007
+UFX.combi_no = 10072
+UFX.stockholder_id = 
+UFX.asset_no = 
+UFX.third_reff = GFOTC_NEEQTRADE
+UFX.mac_address = 123 
+UFX.op_station = 123 
+UFX.ip_address = 123 
+UFX.market_no = 10
+
+Strategy_ParamMap_Str = AvoidStrategyParamMap,ArbitrageStrategyParamMap

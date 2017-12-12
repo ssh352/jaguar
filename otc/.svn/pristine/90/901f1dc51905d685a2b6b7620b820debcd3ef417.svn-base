@@ -1,0 +1,9 @@
+package rmsmodule
+
+import (
+	"quant/emsmodule/emsbase"
+)
+
+func CheckPort(*emsbase.Portfolio) (bool, error) {
+	return true, nil
+}

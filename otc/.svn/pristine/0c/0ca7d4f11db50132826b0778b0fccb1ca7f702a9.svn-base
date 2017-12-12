@@ -1,0 +1,14 @@
+package base
+
+import (
+
+)
+
+type Portfolio struct {
+	
+}
+
+type Entrust struct {
+
+}
+

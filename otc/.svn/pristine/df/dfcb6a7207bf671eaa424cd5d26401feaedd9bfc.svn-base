@@ -1,0 +1,308 @@
+package main
+
+//#cgo CFLAGS:  -I E:/jaguar/sandbox/C++/ufxapi/ufxapi
+//#include <stdio.h>
+//#include <stdlib.h>
+//#include <windows.h>
+//#include "ufxapi.h"
+//#include "response.h"
+/*
+typedef int (* FuncRegisterCallBackPtr)(ufxcallback);
+typedef int (* FuncConnectPtr)(const char *);
+typedef int (* FuncSubConnectPtr)();
+typedef int (* FuncLoginPtr)();
+typedef int (* FuncLimitEntrustPtr)(const char *, const char *, const char *, const char *, const char *, double, int);
+typedef int (* FuncWithdrawPtr)(int);
+typedef int (* FuncQueryPosPtr)(const char*, const char*);
+typedef int (* FuncQueryEntrustByAccPtr)(const char* account, const char* combi_bo);
+typedef int (* FuncQueryEntrustByEntrustNoPtr)(const char*, const char*, int);
+typedef int (* FuncQueryAccountPtr)(const char*, const char*);
+typedef int (* FuncTestretmsgPtr)();
+
+
+HINSTANCE 						G_HANDLE 						= NULL;
+FuncConnectPtr 					G_ConnectPtr 					= NULL;
+FuncRegisterCallBackPtr 		G_RegisterCallBackPtr 			= NULL;
+FuncLoginPtr 					G_LoginPtr 						= NULL;
+FuncSubConnectPtr 				G_SubConnectPtr 				= NULL;
+FuncLimitEntrustPtr 			G_LimitEntrustPtr				= NULL;
+FuncWithdrawPtr					G_WithdrawPtr					= NULL;
+FuncQueryPosPtr					G_QueryPosPtr					= NULL;
+FuncQueryEntrustByAccPtr 		G_QueryEntrustByAccPtr 			= NULL;
+FuncQueryEntrustByEntrustNoPtr 	G_QueryEntrustByEntrustNoPtr 	= NULL;
+FuncQueryAccountPtr 			G_QueryAccountPtr 				= NULL;
+FuncTestretmsgPtr				G_TestretmsgPtr					= NULL;
+
+extern void GoCallBackFunc(void*);
+
+int RegisterUFXCallBack();
+int UFXCallBack(Result* ret);
+
+
+
+int UFXInit(){
+	G_HANDLE 				= LoadLibrary("E:\\jaguar\\sandbox\\C++\\ufxapi\\x64\\Debug\\ufxapi.dll");
+	G_ConnectPtr 			= (FuncConnectPtr)GetProcAddress(G_HANDLE, "Connect");
+	G_RegisterCallBackPtr 	= (FuncRegisterCallBackPtr)GetProcAddress(G_HANDLE, "RegisterCallBack");
+	G_LoginPtr 				= (FuncLoginPtr)GetProcAddress(G_HANDLE, "Login");
+	G_SubConnectPtr 		= (FuncSubConnectPtr)GetProcAddress(G_HANDLE, "SubConnect");
+	G_LimitEntrustPtr		= (FuncLimitEntrustPtr)GetProcAddress(G_HANDLE, "LimitEntrust");
+	G_WithdrawPtr			= (FuncWithdrawPtr)GetProcAddress(G_HANDLE, "Withdraw");
+	G_QueryPosPtr			= (FuncQueryPosPtr)GetProcAddress(G_HANDLE, "QueryPos");
+	G_QueryEntrustByAccPtr 		 = (FuncQueryEntrustByAccPtr)GetProcAddress(G_HANDLE, "QueryEntrustByAcc");
+	G_QueryEntrustByEntrustNoPtr = (FuncQueryEntrustByEntrustNoPtr)GetProcAddress(G_HANDLE, "QueryEntrustByEntrustNo");
+	G_QueryAccountPtr 			 = (FuncQueryAccountPtr)GetProcAddress(G_HANDLE, "QueryAccount");
+	G_TestretmsgPtr				 = (FuncTestretmsgPtr)GetProcAddress(G_HANDLE, "xmalloc");
+	
+	RegisterUFXCallBack();
+	return 0;
+}
+
+
+int UFXConnect(const char* serverIp){
+	if(G_ConnectPtr != NULL){
+		return G_ConnectPtr(serverIp);
+	}else{
+		return -2;
+	}
+}
+
+int RegisterUFXCallBack(){
+	ufxcallback func = &UFXCallBack;
+	if(G_RegisterCallBackPtr != NULL){
+		return G_RegisterCallBackPtr(func);
+	}else{
+		return -2;
+	}
+}
+
+int UFXLogin(){
+	if(G_LoginPtr != NULL){
+		return G_LoginPtr();
+	}else{
+		return -2;
+	}
+}
+
+int UFXSubConnect(){
+	if(G_SubConnectPtr != NULL){
+		return G_SubConnectPtr();
+	}else{
+		return -2;
+	}
+}
+
+int UFXLimitEntrust(const char* account_code, const char* market_no, const char* stock_code, 
+								   const char* combi_no, const char* BS, double price, int vol){
+	if(G_LimitEntrustPtr != NULL){
+		return G_LimitEntrustPtr(account_code, market_no, stock_code, combi_no, BS, price, vol);
+	}else{
+		return -2;
+	}
+}
+
+int UFXWithdraw(int entrustno){
+	if(G_WithdrawPtr != NULL){
+		return G_WithdrawPtr(entrustno);
+	}else{
+		return -2;
+	}
+}
+
+int UFXQueryPos(const char* account, const char* combi_bo){
+	if(G_QueryPosPtr != NULL){
+		return G_QueryPosPtr(account, combi_bo);
+	}else{
+		return -2;
+	}
+}
+
+
+int UFXQueryEntrustByAcc(const char* account, const char* combi_no){
+	if(G_QueryEntrustByAccPtr != NULL){
+		return G_QueryEntrustByAccPtr(account, combi_no);
+	}else{
+		return -2;
+	}
+}
+
+int UFXQueryEntrustByEntrustNo(const char* account, const char* combi_no, int EntrustNo){
+	if(G_QueryEntrustByEntrustNoPtr != NULL){
+		return G_QueryEntrustByEntrustNoPtr(account, combi_no, EntrustNo);
+	}else{
+		return -2;
+	}
+}
+
+int UFXQueryAccount(const char* account, const char* combi_no){
+	if(G_QueryAccountPtr != NULL){
+		return G_QueryAccountPtr(account, combi_no);
+	}else{
+		return -2;
+	}
+}
+
+int UFXClose(){
+	if(G_HANDLE != NULL){
+		FreeLibrary(G_HANDLE);
+	}
+	return 0;
+}
+
+int UFXCallBack(Result* ret){
+	GoCallBackFunc(ret);
+	return 0;
+}
+
+char* xmalloc2(int len){
+    static const char* s = "0123456789";
+    char* p = malloc(len);
+	memcpy(p, s, len);
+    return p;
+}
+
+void freemem(void* p){
+	free(p);
+}
+*/
+import "C"
+import "fmt"
+//import "time"
+import "unsafe"
+import "reflect"
+import "os"
+
+var(
+	HandleFuncMap map[int]reflect.Value
+)
+
+func Init_handle_map(){
+	HandleFuncMap = make(map[int]reflect.Value)
+	HandleFuncMap[91001] = reflect.ValueOf(UFX_91001_RESP_HANDLE)
+	HandleFuncMap[10001] = reflect.ValueOf(UFX_10001_RESP_HANDLE)
+	HandleFuncMap[91101] = reflect.ValueOf(UFX_91101_RESP_HANDLE)
+	HandleFuncMap[31001] = reflect.ValueOf(UFX_31001_RESP_HANDLE)
+	HandleFuncMap[32001] = reflect.ValueOf(UFX_32001_RESP_HANDLE)
+	HandleFuncMap[34001] = reflect.ValueOf(UFX_34001_RESP_HANDLE)
+}
+
+
+// Handle Login response
+func UFX_10001_RESP_HANDLE(ret *C.struct_Result) string {
+	if ret.ErrorCode < 0 {
+		fmt.Printf("Going to exit. Because: %s", C.GoString(ret.ErrorMsg))
+		os.Exit(-1)
+	}
+	resp := (*C.struct_LoginResp)(ret.DataSet)
+	fmt.Printf("%+v\n", *resp)
+	return "0"
+}
+
+// Handle Withdraw response
+func UFX_91101_RESP_HANDLE(ret *C.struct_Result) string {
+	resp := (*C.struct_EntrustResp)(ret.DataSet)
+	fmt.Printf("%+v\n", *resp)
+	return "0"
+}
+
+// Handle QueryPos response
+func UFX_31001_RESP_HANDLE(ret *C.struct_Result) string {
+	resp := (*C.struct_QueryPosResp)(ret.DataSet)
+	if ret.ErrorCode >= 0 {
+		ndata := int(ret.DataCount)
+		for i:=0; i<ndata; i++ {
+			fmt.Printf("---%d---  stock_code: %s, enable_amount: %d, last_price: %f, cost_price: %f, total_profit: %f, floating_profit: %f, accumulate_profit: %f\n", 
+				i, C.GoString(resp.stock_code), resp.enable_amount, resp.last_price, resp.cost_price, resp.total_profit, resp.floating_profit, resp.accumulate_profit)
+			resp = (*C.struct_QueryPosResp)(resp.nextdataptr)
+		}		
+	}else{
+		return C.GoString(ret.ErrorMsg)	
+	}
+	return "0"
+}
+
+// Handle QueryEntrustByAcc response
+func UFX_32001_RESP_HANDLE(ret *C.struct_Result) string {
+	resp := (*C.struct_QueryEntrustResp)(ret.DataSet)
+	if ret.ErrorCode >= 0 {
+		ndata := int(ret.DataCount)
+		for i:=0; i<ndata; i++ {
+			fmt.Printf("stock_code: %s, entrust_date: %d, entrust_time: %d, entrust_no: %d, entrust_price: %f, entrust_amount: %d\n", 
+						C.GoString(resp.stock_code), resp.entrust_date, resp.entrust_time, resp.entrust_no, resp.entrust_price, resp.entrust_amount)
+			resp = (*C.struct_QueryEntrustResp)(resp.nextentrustptr)
+		}		
+	}else{
+		return C.GoString(ret.ErrorMsg)	
+	}
+	return "0"
+}
+
+// Handle LimitEntrust response
+func UFX_91001_RESP_HANDLE(ret *C.struct_Result) string {
+	resp := (*C.struct_EntrustResp)(ret.DataSet)
+	
+	// test query entrust by entrustno
+	account_code := C.CString("1007")
+	defer C.free(unsafe.Pointer(account_code))
+	
+	comi_no := C.CString("10072")
+	defer C.free(unsafe.Pointer(comi_no))
+	
+	C.UFXQueryEntrustByEntrustNo(account_code, comi_no, resp.entrust_no)
+	
+	return "0"
+}
+
+// Handle QueryAccount response
+func UFX_34001_RESP_HANDLE(ret *C.struct_Result) string {
+	resp := (*C.struct_QueryAccountResp)(ret.DataSet)
+	fmt.Printf("account: %s enable_balance_t0: %f enable_balance_t1: %f current_balance: %f\n", 
+			C.GoString(resp.account_code), resp.enable_balance_t0, resp.enable_balance_t1, resp.current_balance)
+	return "0"
+}
+
+
+
+func main() {
+	
+	
+	Init_handle_map()
+	
+	C.UFXInit()
+
+	serverIp := C.CString("10.2.130.189:18801")
+	defer C.free(unsafe.Pointer(serverIp))
+	
+	C.UFXConnect(serverIp)
+	
+//    fmt.Println(C.GoString(msg))
+    
+    
+//	C.UFXSubConnect()
+//	C.UFXLogin()
+//	
+//	time.Sleep(time.Millisecond * 1000)
+//	
+//	account_code := C.CString("1007")
+//	defer C.free(unsafe.Pointer(account_code))
+//	
+//	marker_no := C.CString("1")
+//	defer C.free(unsafe.Pointer(marker_no))
+//
+//	stock_code := C.CString("600000")
+//	defer C.free(unsafe.Pointer(stock_code))
+// 
+//	comi_no := C.CString("10072")
+//	defer C.free(unsafe.Pointer(comi_no))
+//	
+//	BS := C.CString("1")
+//	defer C.free(unsafe.Pointer(BS))
+//	
+////	C.UFXLimitEntrust(account_code, marker_no, stock_code, comi_no, BS, 12.880, 200)
+//
+//	C.UFXQueryPos(account_code, comi_no);
+////	C.UFXQueryEntrustByAcc(account_code, comi_no);
+////	C.UFXQueryAccount(account_code, comi_no)
+//	
+	C.getchar()
+}

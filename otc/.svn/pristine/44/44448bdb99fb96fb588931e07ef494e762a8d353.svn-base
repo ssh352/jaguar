@@ -1,0 +1,70 @@
+package config
+
+import (
+	"flag"
+	"runtime"
+)
+
+var (
+	gconf    *Config
+	Conf     *Configuration
+	confFile string
+)
+
+func init() {
+	flag.StringVar(&confFile, "c", "./config/vss.conf", " set VSS config file path")
+}
+
+type Configuration struct {
+	// vss
+	VssHost          string `goconf:"vss:vsshost"`
+	ConnType         string `goconf:"vss:conntype"`
+	SenderCompID     string `goconf:"vss:SenderCompID"`
+	TargetCompID     string `goconf:"vss:TargetCompID"`
+	HeartBtInt       int    `goconf:"vss:HeartBtInt"`
+	VssPassword      string `goconf:"vss:Password"`
+	DefaultApplVerID string `goconf:"vss:DefaultApplVerID"`
+	MaxProc          int    `goconf:"vss:maxproc"`
+
+	// redis
+	RedisHost     string `goconf:"redis:redishost"`
+	Database      string `goconf:"redis:database"`
+	RedisPassword string `goconf:"redis:password"`
+	MaxOpenConns  string `goconf:"redis:maxOpenConns"`
+	MaxIdleConns  string `goconf:"redis:maxIdleConns"`
+
+	// zmq
+	ZMQBind string `goconf:"zmq:zmq.bind.addr"`
+}
+
+func InitConfig() (err error) {
+	Conf = NewConfig()
+	gconf = New()
+	// 解析vss.conf配置文件
+	if err = gconf.Parse(confFile); err != nil {
+		return err
+	}
+	if err = gconf.Unmarshal(Conf); err != nil {
+		return err
+	}
+	return nil
+}
+
+func NewConfig() *Configuration {
+	return &Configuration{
+		MaxProc: runtime.NumCPU(),
+	}
+}
+
+func ReloadConfiguration() (*Configuration, error) {
+	conf := NewConfig()
+	ngconf, err := gconf.Reload()
+	if err != nil {
+		return nil, err
+	}
+	if err := ngconf.Unmarshal(conf); err != nil {
+		return nil, err
+	}
+	gconf = ngconf
+	return conf, nil
+}

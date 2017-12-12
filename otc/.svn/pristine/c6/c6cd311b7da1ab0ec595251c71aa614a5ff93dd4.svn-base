@@ -1,0 +1,39 @@
+package algorithm
+
+import (
+	"fmt"
+	"quant/emsmodule/emsbase"
+	"quant/helper"
+)
+
+// Common algorithm trade.
+type Common struct {
+	AdaptersMap map[string]emsbase.ITarde
+}
+
+// Trade is called by algorithmadmin.go.
+func (c *Common) Trade(p emsbase.Portfolio) error {
+	for _, e := range p.SecurityEntrusts {
+		itrade, ok := c.AdaptersMap[p.AdapterName]
+		if ok {
+			mkdat, err := helper.GetQuote(e.StockCode)
+			if err == nil {
+				if e.Price == 0 {
+					if e.BS == emsbase.Buy {
+						e.Price = mkdat.AskPrice[0]
+					} else {
+						e.Price = mkdat.BidPrice[0]
+					}
+				}
+				// fmt.Printf("Common Trade\n")
+				itrade.LimitEntrust(e, p.AccountID, p.CombiNo)
+			}
+		} else {
+			return &emsbase.RespError{ErrorMsg: fmt.Sprintf("Common algorithm: can't find \"%s\" trade adapter.", p.AdapterName)}
+		}
+	}
+	return nil
+}
+
+func (c *Common) CheckPortStatus() {}
+func (c *Common) Append()          {}

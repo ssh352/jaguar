@@ -1,0 +1,10 @@
+package helper
+
+const (
+	// QuantConfigFile is the configure file name for quant project
+	QuantConfigFile string = "./conf/quant.ini"
+	// QuantLogConfigFile is the log configure file name for quant project
+	QuantLogConfigFile string = "./conf/quant_log.xml"
+	// RedisKey is the key stored quote data
+	RedisKey string = "MarketMap_test"
+)

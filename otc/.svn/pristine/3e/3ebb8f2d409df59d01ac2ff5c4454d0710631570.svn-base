@@ -1,0 +1,748 @@
+package com.gf.otc.neeq.common.ufx;
+
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+import org.apache.commons.lang.StringUtils;
+
+import com.hundsun.mcapi.interfaces.ISubscriber;
+import com.hundsun.t2sdk.common.core.context.ContextUtil;
+import com.hundsun.t2sdk.common.share.dataset.DatasetService;
+import com.hundsun.t2sdk.impl.client.T2Services;
+import com.hundsun.t2sdk.interfaces.IClient;
+import com.hundsun.t2sdk.interfaces.T2SDKException;
+import com.hundsun.t2sdk.interfaces.share.dataset.IDataset;
+import com.hundsun.t2sdk.interfaces.share.dataset.IDatasets;
+import com.hundsun.t2sdk.interfaces.share.event.EventReturnCode;
+import com.hundsun.t2sdk.interfaces.share.event.EventType;
+import com.hundsun.t2sdk.interfaces.share.event.IEvent;
+
+/**
+ * UFX接口(股票委托接口)封装类
+ * @author lianghuiming
+ * 2015-08-07
+ */
+public class UfxServiceImpl implements UfxService{
+	
+	private IClient client = null;
+	private T2Services server = T2Services.getInstance();
+	private int TIMEOUT = 10000;
+	private String session = null;
+	private int subscribeid;
+	private ISubscriber subscriber;
+	
+	public UfxServiceImpl(){
+		try{
+			String rootPath = this.getClass().getResource("/").getFile().toString();
+			//读取配置文件
+			Properties props = new Properties();
+			InputStream in = new BufferedInputStream(new FileInputStream(new File(rootPath + "../config/ufx_config.properties")));
+			props.load(in);
+
+			//把配置文件的属性写入内存
+			ConfigProperties.DES_KEY = props.getProperty("DES_KEY");
+
+			//UFX参数
+			ConfigProperties.OPERATOR_NO = props.getProperty("UFX.operator_no");//操作员编号
+			ConfigProperties.OPERATOR_PASSWORD = DesUtil.decrypt(props.getProperty("UFX.operator_password"));//操作员密码
+			ConfigProperties.ACCOUNT_CODE = props.getProperty("UFX.account_code");//账户编号
+			ConfigProperties.COMBI_NO = props.getProperty("UFX.combi_no");//组合编号
+			ConfigProperties.STOCKHOLDER_ID = props.getProperty("UFX.stockholder_id");//股东代码
+			ConfigProperties.ASSET_NO = props.getProperty("UFX.asset_no");//资产单元编号
+			ConfigProperties.THIRD_REFF = props.getProperty("UFX.third_reff");//第三方系统自定义说明
+			ConfigProperties.MAC_ADDRESS = props.getProperty("UFX.mac_address");//登录机器MAC地址
+			ConfigProperties.OP_STATION = props.getProperty("UFX.op_station");//登录站点
+			ConfigProperties.IP_ADDRESS = props.getProperty("UFX.ip_address");//登录机器IP地址
+			ConfigProperties.MARTET_NO = props.getProperty("UFX.market_no");//交易市场
+			
+			ConfigProperties.AUTHORIZATION_ID = props.getProperty("UFX.authorization_id");//wuyf20161028
+			
+			this.connect();
+    	}catch(Exception e){
+    		e.printStackTrace();
+    	}
+	}
+	
+	public static void PrintMsg(IDatasets result) {
+		StringBuilder sb = new StringBuilder();
+		int datasetCount = result.getDatasetCount();
+		// 遍历所有的结果集
+		for (int i = 0; i < datasetCount; i++) {
+			sb.append("===============================================\n");
+			// 开始读取单个结果集的信息
+			IDataset ds = result.getDataset(i);
+			int columnCount = ds.getColumnCount();
+			// 遍历单个结果集列信息
+			for (int j = 1; j <= columnCount; j++) {
+				sb.append(String.format("%20s", ds.getColumnName(j)));
+				sb.append("|");
+			}
+			sb.append("\n");
+			// 遍历单个结果集记录，遍历前首先将指针置到开始
+			ds.beforeFirst();
+			while (ds.hasNext()) {
+				sb.append("\n");
+				ds.next();
+				for (int j = 1; j <= columnCount; j++) {
+					sb.append(String.format("%20s", ds.getString(j)));
+					sb.append("|");
+				}
+			}
+		}
+		sb.append("\n");
+		System.out.println(sb.toString());
+	}
+	
+	/**
+	 * 链接后台 订阅主推消息
+	 * 
+	 * @throws Exception
+	 */
+	private void connect() throws Exception {
+		server.init();
+		server.start();
+		client = server.getClient("as_ufx");
+
+		/*
+		//不启动消息订阅
+		MCServers.MCInit();
+		subscriber = MCServers.GetSubscriber();
+		MCSubscribeParameter subParam = new MCSubscribeParameter();
+		subParam.SetTopicName("ufx_topic"); // ufx成交回报固定主题
+		subParam.SetFromNow(true);
+		subParam.SetReplace(false);
+		subParam.SetFilter("msgtype", "g");//g表示成交 可空
+		subParam.SetFilter("market_no", ConfigProperties.MARTET_NO);//可空
+		subParam.SetFilter("operator_no", ConfigProperties.OPERATOR_NO);//不可空
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("login_operator_no");
+		dataset.addColumn("password");
+		dataset.appendRow();
+		dataset.updateString("login_operator_no", ConfigProperties.OPERATOR_NO);
+		dataset.updateString("password", ConfigProperties.OPERATOR_PASSWORD);
+		dataset.updateString("password", ConfigProperties.OPERATOR_PASSWORD);
+		subParam.SetBizCheck(dataset);
+		subscribeid = subscriber.SubscribeTopic(subParam, 3000);
+		if (subscribeid < 0) {
+			throw new Exception("订阅主题失败 ret[" + subscribeid + "]");
+		}
+		*/
+	}
+
+	/**
+	 * 取消订阅 断开链接
+	 * 
+	 * @throws Exception
+	 */
+	private void disConnect() throws Exception {
+		//logger.info("后台链接断开");
+		/*int ret = subscriber.CancelSubscribeTopic(subscribeid);
+		if (ret < 0) {
+			throw new Exception("取消订阅主题失败 ret[" + ret + "]");
+		}
+		MCServers.Destroy();*/
+		server.stop();
+	}
+	
+	/**
+	 * 用默认用户登陆
+	 * 调用功能号10001
+	 * @return 用户token
+	 */
+	public String login() throws Exception{
+		String user_token = null;
+		
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("operator_no");
+		dataset.addColumn("password");
+		dataset.addColumn("mac_address");
+		dataset.addColumn("op_station");
+		dataset.addColumn("ip_address");
+		dataset.addColumn("authorization_id");
+		dataset.addColumn("login_time");
+		dataset.addColumn("verification_code");
+		dataset.appendRow();
+		dataset.updateString("operator_no", ConfigProperties.OPERATOR_NO);
+		dataset.updateString("password", ConfigProperties.OPERATOR_PASSWORD);
+		dataset.updateString("mac_address", ConfigProperties.MAC_ADDRESS);
+		dataset.updateString("op_station", ConfigProperties.OP_STATION);
+		dataset.updateString("ip_address", ConfigProperties.IP_ADDRESS);
+		dataset.updateString("authorization_id", ConfigProperties.AUTHORIZATION_ID);
+		dataset.updateString("login_time", "");
+		dataset.updateString("verification_code", "");
+		
+		//调用功能号
+		IDatasets result = CallSerivce(10001, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} else {
+			if (head.getInt("DataCount") != 0) {
+				IDataset biz = result.getDataset(1);
+				user_token = biz.getString("user_token");
+			}
+		}
+		
+		return user_token;
+	}
+	
+	/**
+	 * 登出
+	 * 调用功能号10002
+	 * @param user_token 令牌号
+	 */
+	public void logout(String user_token) throws Exception {
+		
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("user_token");
+		
+		dataset.appendRow();
+		dataset.updateString("user_token", user_token);
+		
+		//调用功能号
+		IDatasets result = CallSerivce(10002, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} 
+	}
+	
+	/**
+	 * 委托
+	 * 调用功能号91011
+	 * @param user_token 令牌号
+	 * @param stock_code 股票代码
+	 * @param buy_price 买入价格
+	 * @param buy_amount 买入数量
+	 * @param sell_price 卖出价格
+	 * @param sell_amount 卖出数量
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> entrust(String user_token, String stock_code, double buy_price, int buy_amount, double sell_price, int sell_amount,String strategyName) throws Exception {
+				
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("user_token");
+		dataset.addColumn("account_code");
+		//dataset.addColumn("asset_no");
+		dataset.addColumn("combi_no");
+		dataset.addColumn("stockholder_id");
+		dataset.addColumn("report_seat");
+		dataset.addColumn("stock_code");
+		dataset.addColumn("buy_price");
+		dataset.addColumn("buy_amount");
+		dataset.addColumn("sell_price");
+		dataset.addColumn("sell_amount");
+		dataset.addColumn("third_reff");
+
+		DecimalFormat df = new DecimalFormat("######0.00");//保留2位小数
+		
+		dataset.appendRow();
+		dataset.updateString("user_token", user_token);
+		dataset.updateString("account_code", ConfigProperties.ACCOUNT_CODE);
+		//dataset.updateString("asset_no", ConfigProperties.ASSET_NO);
+		dataset.updateString("combi_no", ConfigProperties.COMBI_NO);//TODO
+		dataset.updateString("stockholder_id", ConfigProperties.STOCKHOLDER_ID);
+		dataset.updateString("report_seat", "");
+		dataset.updateString("stock_code", stock_code);
+		dataset.updateString("buy_price", df.format(buy_price));
+		dataset.updateString("buy_amount", String.valueOf(buy_amount));
+		dataset.updateString("sell_price", df.format(sell_price));
+		dataset.updateString("sell_amount", String.valueOf(sell_amount));
+		//dataset.updateString("third_reff", ConfigProperties.THIRD_REFF);
+		dataset.updateString("third_reff", strategyName);
+		
+		//调用功能号
+		IDatasets result = CallSerivce(91011, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} 
+		
+		//this.PrintMsg(result);
+		return this.toList(result);
+	}
+	
+	/**
+	 * 撤单
+	 * 调用功能号91102
+	 * @param user_token 令牌号
+	 * @param batch_no 委托批号
+	 * @return
+	 * @throws Exception
+	 */
+	public IDatasets withdraw(String user_token, String batch_no) throws Exception {
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("user_token");
+		dataset.addColumn("batch_no");
+
+		dataset.appendRow();
+		dataset.updateString("user_token", user_token);
+		dataset.updateString("batch_no", batch_no);
+
+		//调用功能号
+		IDatasets result = CallSerivce(91102, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} 
+		
+		return result;
+	}
+	
+	/**
+	 * 委托查询
+	 * 调用功能号32006
+	 * @param user_token 令牌号
+	 * @param batch_no 委托批号
+	 * @param stock_code 证券代码
+	 * @param entrust_state_list 委托状态
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> queryEntrust(String user_token, String batch_no, String stock_code, String entrust_state_list) throws Exception{
+	    IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+	    dataset.addColumn("user_token");
+	    dataset.addColumn("batch_no");
+	    dataset.addColumn("account_code");
+	    
+	    dataset.addColumn("combi_no");
+	    dataset.addColumn("stockholder_id");
+	    dataset.addColumn("stock_code");
+	    dataset.addColumn("entrust_state_list");
+	    dataset.addColumn("third_reff");
+	    
+	    dataset.appendRow();
+	    dataset.updateString("user_token", user_token);
+	    dataset.updateString("batch_no", batch_no);
+	    dataset.updateString("account_code", ConfigProperties.ACCOUNT_CODE);
+	    
+	    dataset.updateString("combi_no", ConfigProperties.COMBI_NO);
+	    dataset.updateString("stockholder_id", ConfigProperties.STOCKHOLDER_ID);
+	    dataset.updateString("stock_code", stock_code);
+	    dataset.updateString("entrust_state_list", entrust_state_list);
+	    dataset.updateString("third_reff", ConfigProperties.THIRD_REFF);
+	    
+	    IDatasets result = CallSerivce(32006, dataset);
+	    
+	    IDataset head = result.getDataset(0);
+	    int errCode = head.getInt("ErrorCode");
+	    if (errCode != 0) {
+	      throw new Exception(head.getString("ErrorMsg"));
+	    }
+	    return toList(result);
+	}
+	
+	/**
+	 * 成交查询
+	 * 调用功能号33001
+	 * @param user_token 令牌号
+	 * @param entrust_no 委托序号
+	 * @param deal_no 成交编号
+	 * @param stock_code 证券代码
+	 * @param entrust_direction 委托方向
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> queryDeal(String user_token, String entrust_no, String deal_no, String stock_code, String entrust_direction) throws Exception{
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("user_token");
+		dataset.addColumn("account_code");
+		//dataset.addColumn("asset_no");
+		dataset.addColumn("combi_no");
+		dataset.addColumn("entrust_no");
+		dataset.addColumn("deal_no");
+		dataset.addColumn("stockholder_id");
+		dataset.addColumn("stock_code");
+		dataset.addColumn("entrust_direction");
+		dataset.addColumn("extsystem_id");
+		dataset.addColumn("position_str");
+		dataset.addColumn("request_num");
+
+		dataset.appendRow();
+		dataset.updateString("user_token", user_token);
+		dataset.updateString("account_code", ConfigProperties.ACCOUNT_CODE);
+		//dataset.updateString("asset_no", ConfigProperties.ASSET_NO);
+		dataset.updateString("combi_no", ConfigProperties.COMBI_NO);
+		dataset.updateString("entrust_no", entrust_no);
+		dataset.updateString("deal_no", deal_no);
+		dataset.updateString("stockholder_id", ConfigProperties.STOCKHOLDER_ID);
+		dataset.updateString("stock_code", stock_code);
+		dataset.updateString("entrust_direction", entrust_direction);
+		dataset.updateString("extsystem_id", ConfigProperties.THIRD_REFF);
+		dataset.updateString("position_str", "");
+		dataset.updateString("request_num", "");
+		
+		//调用功能号
+		IDatasets result = CallSerivce(33001, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} 
+		//this.PrintMsg(result);
+		return this.toList(result);
+	}
+	
+	/**
+	 * 股票持仓查询
+	 * @param user_token 令牌号
+	 * @param stock_code 证券代码
+	 * @return
+	 * @throws Exception
+	 */
+	public List<Map<String, String>> queryPosition(String user_token, String stock_code) throws Exception{
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("user_token");
+		dataset.addColumn("account_code");
+		//dataset.addColumn("asset_no");
+		dataset.addColumn("combi_no");
+		dataset.addColumn("stock_code");
+		dataset.addColumn("stockholder_id");
+
+		dataset.appendRow();
+		dataset.updateString("user_token", user_token);
+		dataset.updateString("account_code", ConfigProperties.ACCOUNT_CODE);
+		//dataset.updateString("asset_no", ConfigProperties.ASSET_NO);
+		dataset.updateString("combi_no", ConfigProperties.COMBI_NO);
+		dataset.updateString("stock_code", stock_code);
+		dataset.updateString("stockholder_id", ConfigProperties.STOCKHOLDER_ID);
+		
+		//调用功能号
+		IDatasets result = CallSerivce(31001, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} 
+		//this.PrintMsg(result);
+		return this.toList(result);
+	}
+	
+	//调用功能号========================================================
+	/**
+	 * 同步调用
+	 * @param funcno
+	 * @param dataset
+	 * @return
+	 * @throws T2SDKException
+	 */
+	private IDatasets CallSerivce(int funcno, IDataset dataset) throws T2SDKException {
+		IDatasets result = null;
+
+		try{
+			IEvent event = ContextUtil.getServiceContext().getEventFactory().getEventByAlias(String.valueOf(funcno), EventType.ET_REQUEST);
+			event.putEventData(dataset);
+			IEvent rsp = client.sendReceive(event, TIMEOUT);
+			// 先判断返回值
+			if (rsp.getReturnCode() != EventReturnCode.I_OK) { // 返回错误
+				throw new T2SDKException(rsp.getErrorNo(), rsp.getErrorInfo());
+			} else {
+				result = rsp.getEventDatas();
+			}
+		}catch(T2SDKException e){
+			e.printStackTrace();
+		}catch(Exception e){
+			e.printStackTrace();
+		}
+		return result;
+	}
+	
+	/**
+	 * 解析及封装功能号返回的IDatasets对象
+	 * @param result
+	 * @return
+	 */
+	public static List<Map<String, String>> toList(IDatasets result){
+		List list = new ArrayList<Map<String, String>>();
+		Map<String, String> map;
+		//获得结果集总数
+		int datasetCount = result.getDatasetCount();
+		
+		IDataset ds;
+		//遍历所有的结果集
+		for (int i = 0; i < datasetCount; i++) {
+			// 开始读取单个结果集的信息
+			ds = result.getDataset(i);
+			
+			// 遍历单个结果集记录，遍历前首先将指针置到开始
+			ds.beforeFirst();
+			while (ds.hasNext()) {
+				ds.next();
+				//用map来封装 每个字段的数据
+				map = new HashMap<String, String>();
+				for (int j = 1; j <= ds.getColumnCount(); j++) {
+					map.put(ds.getColumnName(j), ds.getString(j));
+				}
+				
+				//用list封装每行数据
+				list.add(map);
+			}
+		}
+		
+		return list;
+	}
+	
+	public List<Map<String, String>> hs_91001(Map<String, String> params)
+			throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用91001功能号
+			IDatasets result = CallSerivce(91001, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+
+	public List<Map<String, String>> hs_91101(Map<String, String> params)
+			throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用91101功能号
+			IDatasets result = CallSerivce(91101, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+
+	public List<Map<String, String>> hs_31001(
+			Map<String, String> params) throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用31001功能号
+			IDatasets result = CallSerivce(31001, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+
+	public List<Map<String, String>> hs_32001(
+			Map<String, String> params) throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用32001功能号
+			IDatasets result = CallSerivce(32001, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+
+	public List<Map<String, String>> hs_32101(
+			Map<String, String> params) throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用32101功能号
+			IDatasets result = CallSerivce(32101, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+
+	public List<Map<String, String>> hs_33001(
+			Map<String, String> params) throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用33001功能号
+			IDatasets result = CallSerivce(33001, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+
+	public List<Map<String, String>> hs_33101(
+			Map<String, String> params) throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用33101功能号
+			IDatasets result = CallSerivce(33101, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+	
+	public List<Map<String, String>> hs_common(Map<String, String> params,
+			Integer func_id) throws Exception {
+		if(params.isEmpty()){
+			throw new Exception("输入参数为空！");
+		}
+		IDataset dataset = dealWithParams(params);
+		if(dataset != null){
+			// 调用功能号
+			IDatasets result = CallSerivce(func_id, dataset);
+			// 解析返回结果
+			IDataset head = result.getDataset(0);
+			int errCode = head.getInt("ErrorCode");
+			if (errCode != 0) {
+				throw new Exception(head.getString("ErrorMsg"));
+			} 
+			return this.toList(result);
+		}
+		return null;
+	}
+	
+	/**
+	 * 组装查询条件
+	 * @param params
+	 * @return
+	 * @throws Exception
+	 */
+	private IDataset dealWithParams(Map<String, String> params){
+		if(!params.isEmpty()){
+			IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+			// 组装条件
+			for(String key : params.keySet()){
+				dataset.addColumn(key);
+			}
+			// 组装数据
+			dataset.appendRow();
+			for(String key : params.keySet()){
+				// 查询条件为null，则默认为""
+				dataset.updateString(key, (params.get(key)==null||"".equals(params.get(key)))?"":params.get(key).trim());
+			}
+			return dataset;
+		}
+		return null;
+	}
+	
+	public String login(String operator_no, String password) throws Exception {
+		String user_token = null;
+		
+		//封装数据
+		IDataset dataset = DatasetService.getDefaultInstance().getDataset();
+		dataset.addColumn("operator_no");
+		dataset.addColumn("password");
+		dataset.addColumn("mac_address");
+		dataset.addColumn("op_station");
+		dataset.addColumn("ip_address");
+		dataset.addColumn("authorization_id");
+		dataset.addColumn("login_time");
+		dataset.addColumn("verification_code");
+		dataset.appendRow();
+		dataset.updateString("operator_no", parseString(operator_no));
+		dataset.updateString("password", parseString(password));
+		dataset.updateString("mac_address", parseString(ConfigProperties.MAC_ADDRESS));
+		dataset.updateString("op_station", parseString(ConfigProperties.OP_STATION));
+		dataset.updateString("ip_address", parseString(ConfigProperties.IP_ADDRESS));
+		dataset.updateString("authorization_id", parseString("58182DCBDFFF466C8895104D5B50618A"));
+		dataset.updateString("login_time", "");
+		dataset.updateString("verification_code", "");
+		
+		//调用功能号
+		IDatasets result = CallSerivce(10001, dataset);
+		
+		//解析返回结果
+		IDataset head = result.getDataset(0);
+		int errCode = head.getInt("ErrorCode");
+		if (errCode != 0) {
+			throw new Exception(head.getString("ErrorMsg"));
+		} else {
+			if (head.getInt("DataCount") != 0) {
+				IDataset biz = result.getDataset(1);
+				user_token = biz.getString("user_token");
+			}
+		}
+		
+		return user_token;
+	}
+
+	private String parseString(String str){
+		if(StringUtils.isBlank(str)){
+			return "";
+		}else{
+			return str;
+		}
+	}
+}

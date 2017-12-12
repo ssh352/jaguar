@@ -1,0 +1,213 @@
+package main
+
+import (
+	"github.com/Workiva/go-datastructures/queue"
+	log "github.com/thinkboy/log4go"
+	"github.com/widuu/goini"
+	emsbase "quant/emsmodule/base"
+	"quant/helper"
+	"strconv"
+	"time"
+	"util/db"
+)
+
+const (
+	insertEntrustSQL string = "INSERT INTO jqorder(tactic_id,tactic_type,strategy_name, " +
+		"prodid,account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
+		"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
+		"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+
+		// insertordersql string = "INSERT INTO `order`(tactic_id,tactic_type,strategy_name, " +
+		// 	"prodid, account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
+		// 	"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
+		// 	"VALUES(\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",%f,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",\"%s\")"
+
+	updateEntrustSQL        string = "update jqorder set operator_no = ?, business_date = ?, business_time = ?, entrust_no = ?, entrust_price = ?, entrust_status = ?, invest_type= ?, price_type = ?, report_no = ?, report_seat = ?, stockholder_id = ? where third_reff = ?"
+	updateEntrustByTradeSQL string = "update jqorder set entrust_status = ?, deal_amount = ?, deal_balance = ?, deal_price = ? where third_reff = ?"
+	insertTradeSQL          string = "insert into jqtrade(account_code,batch_no,cancel_amount,combi_no,deal_amount,deal_balance,deal_date,deal_fee,deal_no,deal_price,deal_time,entrust_amount,entrust_direction,entrust_no,entrust_status,extsystem_id,futures_direction,market_no,operator_no,report_direction,report_seat,stock_code,stockholder_id,third_reff,total_deal_amount,total_deal_balance) " +
+		"values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+type datacenter struct {
+	dbop            *db.MysqlWorker
+	conf            *goini.Config
+	sqls            chan string
+	portfolio       *queue.RingBuffer
+	entrustPush     *queue.RingBuffer
+	tradePush       *queue.RingBuffer
+	trades          *queue.RingBuffer
+	pollTimeOut     int
+	entrustBatchNum int
+	tradeBatchNum   int
+}
+
+func (r *datacenter) init() {
+	r.conf = goini.SetConfig(helper.QuantConfigFile)
+	r.entrustPush = queue.NewRingBuffer(uint64(r.conf.GetInt(helper.ConfigOMSSessionName, helper.ConfigOMSEntrustLen)))
+	r.tradePush = queue.NewRingBuffer(uint64(r.conf.GetInt(helper.ConfigOMSSessionName, helper.ConfigOMSTradeLen)))
+	r.portfolio = queue.NewRingBuffer(uint64(r.conf.GetInt(helper.ConfigEMSSessionName, helper.ConfigEMSPortQueueLen)))
+	r.pollTimeOut = r.conf.GetInt(helper.ConfigOMSSessionName, helper.ConfigOMSPollTimeOut)
+	r.entrustBatchNum = r.conf.GetInt(helper.ConfigOMSSessionName, helper.ConfigOMSEntrustUpdateBatchNum)
+	r.tradeBatchNum = r.conf.GetInt(helper.ConfigOMSSessionName, helper.ConfigOMSTradeInsertBatchNum)
+	config := db.MysqlConfig{
+		MysqlUsernName: r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlUserName),
+		MysqlPwd:       r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlPwd),
+		MysqlURL:       r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlUrl),
+	}
+	r.sqls = make(chan string, r.conf.GetInt(helper.ConfigEMSSessionName, helper.ConfigEMSSqlLen))
+	r.trades = queue.NewRingBuffer(uint64(r.conf.GetInt(helper.ConfigOMSSessionName, helper.ConfigOMSTradeLen)))
+	r.dbop = &db.MysqlWorker{SQLs: r.sqls, MysqlConfig: &config}
+	err := r.dbop.Init()
+	if err != nil {
+		log.Error("OMS connect to mysql fail. mysqlurl: %s. Error:%s.", r.dbop.MysqlURL, err.Error())
+	} else {
+		log.Info("OMS connect to %s mysql.", r.dbop.MysqlURL)
+	}
+
+	go r.insertEntrust()
+	go r.updateEntrust()
+	go r.updateEntrustByTrade()
+	go r.insertTrade()
+}
+
+func (r *datacenter) insertEntrust() {
+	for {
+		if r.portfolio.Len() > 0 {
+			// tx, err := r.dbop.DB.Begin()
+			var err error
+			if err != nil {
+				log.Error("EMS record get context failed. Error: %s", err)
+			} else {
+				p1, _ := r.portfolio.Poll(time.Microsecond * time.Duration(r.pollTimeOut))
+				p := p1.(emsbase.Portfolio)
+				for _, e := range p.SecurityEntrusts {
+					// _, err := tx.Exec(insertEntrustSQL, p.TacticID, p.TacticType, p.StrategyName, p.ProdID, p.AccountID, p.CombiNo,
+					// 	e.Vol, e.BS, e.Price, e.MarkerNo, "", e.TradeCode, p.AccountID, time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
+					// 	e.ID, time.Now().UnixNano()/1e6, "STOCK", e.Remark)
+					// if err != nil {
+					// 	log.Error("EMS record exec fail. %s", err)
+					// }
+					r.cacheEntrust(p, e)
+				}
+				// err := tx.Commit()
+				if err != nil {
+					log.Error("EMS record commit fail. %s", err)
+				}
+			}
+		} else {
+			time.Sleep(time.Microsecond * time.Duration(r.pollTimeOut))
+		}
+	}
+}
+
+func (r *datacenter) updateEntrustByTrade() {
+	for {
+		if r.trades.Len() > 0 {
+			tx, err := r.dbop.DB.Begin()
+			if err != nil {
+				log.Error("OMS datacenter get context failed. Error: %s", err)
+			} else {
+				for i := 0; i < r.tradeBatchNum && r.trades.Len() > 0; i++ {
+					t1, _ := r.trades.Poll(time.Microsecond * time.Duration(r.pollTimeOut))
+					t := t1.(emsbase.DealPushResp)
+					r.updateCachedEntrustByTrade(t)
+					_, err := tx.Exec(updateEntrustByTradeSQL, t.EntrustStatus, t.TotalDealAmount, t.TotalDealBalance, t.TotalDealBalance/float64(t.TotalDealAmount), t.ThirdReff)
+					if err != nil {
+						log.Error("OMS datacenter exec fail. %s", err)
+					}
+				}
+				err = tx.Commit()
+				if err != nil {
+					log.Error("OMS datacenter commit fail. %s", err)
+				}
+			}
+		} else {
+			time.Sleep(time.Microsecond * time.Duration(r.pollTimeOut))
+		}
+	}
+}
+
+func (r *datacenter) updateEntrust() {
+	for {
+		if r.entrustPush.Len() > 0 {
+			tx, err := r.dbop.DB.Begin()
+			if err != nil {
+				log.Error("OMS datacenter get context failed. Error: %s", err)
+			} else {
+				for i := 0; i < r.entrustBatchNum && r.entrustPush.Len() > 0; i++ {
+					e1, _ := r.entrustPush.Poll(time.Microsecond * time.Duration(r.pollTimeOut))
+					e := e1.(emsbase.EntrustPushResp)
+					r.updateCachedEntrust(e)
+					_, err = tx.Exec(updateEntrustSQL, e.OperatorNo, e.BusinessDate, e.BusinessTime, e.EntrustNo, e.EntrustPrice, e.EntrustStatus, e.InvestType, e.PriceType, e.ReportNo, e.ReportSeat, e.StockholderID, e.ThirdReff)
+					if err != nil {
+						log.Error("OMS datacenter exec fail. %s", err)
+					}
+				}
+				err = tx.Commit()
+				if err != nil {
+					log.Error("OMS datacenter commit fail. %s", err)
+				}
+			}
+		} else {
+			time.Sleep(time.Microsecond * time.Duration(r.pollTimeOut))
+		}
+	}
+}
+
+func (r *datacenter) insertTrade() {
+	for {
+		if r.tradePush.Len() > 0 {
+			tx, err := r.dbop.DB.Begin()
+			if err != nil {
+				log.Error("OMS datacenter get context failed. Error: %s", err)
+			} else {
+				for i := 0; i < r.tradeBatchNum && r.tradePush.Len() > 0; i++ {
+					t1, _ := r.tradePush.Poll(time.Microsecond * time.Duration(r.pollTimeOut))
+					r.trades.Put(t1)
+					t := t1.(emsbase.DealPushResp)
+					_, err := tx.Exec(insertTradeSQL, t.AccountCode, t.BatchNo, t.CancelAmount, t.CombiNo,
+						t.DealAmount, t.DealBalance, t.DealDate, t.DealFee,
+						t.DealNo, t.DealPrice, t.DealTime, t.EntrustAmount,
+						t.EntrustDirection, t.EntrustNo, t.EntrustStatus,
+						t.ExtsystemID, t.FuturesDirection, t.MarketNo, t.OperatorNo,
+						t.ReportDirection, t.ReportSeat, t.StockCode, t.StockholderID,
+						t.ThirdReff, t.TotalDealAmount, t.TotalDealBalance)
+					if err != nil {
+						log.Error("OMS datacenter exec fail. %s", err)
+					}
+				}
+				err = tx.Commit()
+				if err != nil {
+					log.Error("OMS datacenter commit fail. %s", err)
+				}
+			}
+		} else {
+			time.Sleep(time.Microsecond * time.Duration(r.pollTimeOut))
+		}
+	}
+}
+
+func (r *datacenter) cacheEntrust(p emsbase.Portfolio, e emsbase.Entrust) {
+	entrust := emsbase.EntrustPushResp{}
+	entrust.CombiNo = p.CombiNo
+	entrust.EntrustAmount = e.Vol
+	entrust.EntrustDirection = strconv.Itoa(e.BS)
+	entrust.EntrustPrice = e.Price
+	entrust.MarketNo = e.MarkerNo
+	entrust.StockCode = e.TradeCode
+	cachedEntrust[strconv.FormatInt(e.ID, 10)] = entrust
+	log.Info("Cached entrust: %d", time.Now().UnixNano()/1e6)
+}
+
+func (r *datacenter) updateCachedEntrust(e emsbase.EntrustPushResp) {
+	cachedEntrust[e.ThirdReff] = e
+}
+
+func (r *datacenter) updateCachedEntrustByTrade(t emsbase.DealPushResp) {
+	if e, ok := cachedEntrust[t.ThirdReff]; ok {
+		e.EntrustStatus = t.EntrustStatus
+		e.DealAmount = t.TotalDealAmount
+		e.DealBalance = t.TotalDealBalance
+		e.DealPrice = t.TotalDealBalance / float64(t.TotalDealAmount)
+	}
+}

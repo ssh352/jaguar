@@ -1,0 +1,77 @@
+package main
+
+import (
+	// "fmt"
+	log "github.com/thinkboy/log4go"
+	"github.com/widuu/goini"
+	"quant/emsmodule/emsbase"
+	"quant/helper"
+	// "strconv"
+	"time"
+	"util/db"
+)
+
+const (
+	insertordersql string = "INSERT INTO jqorder(tactic_id,tactic_type,strategy_name, " +
+		"prodid,account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
+		"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
+		"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+
+// insertordersql string = "INSERT INTO `order`(tactic_id,tactic_type,strategy_name, " +
+// 	"prodid, account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
+// 	"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
+// 	"VALUES(\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",%f,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",\"%s\")"
+)
+
+type record struct {
+	dbworker *db.MysqlWorker
+	conf     *goini.Config
+	sqls     chan string
+	ports    chan emsbase.Portfolio
+}
+
+func (r *record) init() {
+	r.conf = goini.SetConfig(helper.QuantConfigFile)
+	config := db.MysqlConfig{
+		MysqlUsernName: r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlUserName),
+		MysqlPwd:       r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlPwd),
+		MysqlURL:       r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlUrl),
+	}
+	r.sqls = make(chan string, r.conf.GetInt(helper.ConfigEMSSessionName, helper.ConfigEMSSqlLen))
+	r.dbworker = &db.MysqlWorker{SQLs: r.sqls, MysqlConfig: &config}
+	err := r.dbworker.Init()
+	if err != nil {
+		log.Error("EMS connect to mysql fail. mysqlurl: %s. Error:%s.", r.dbworker.MysqlURL, err.Error())
+	} else {
+		log.Info("EMS connect to %s mysql.", r.dbworker.MysqlURL)
+	}
+}
+
+func (r *record) run() {
+	go r.dbworker.Run()
+	for p := range r.ports {
+		tx, err := r.dbworker.DB.Begin()
+		if err != nil {
+			log.Error("EMS record get context failed. Error: %s", err)
+		} else {
+			for _, e := range p.SecurityEntrusts {
+				// sql := fmt.Sprintf(insertordersql, p.TacticID, p.TacticType, p.StrategyName, p.ProdID, p.AccountID, p.CombiNo,
+				// 	e.Vol, strconv.Itoa(e.BS), e.Price, e.MarkerNo, "", e.TradeCode, p.AccountID, time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
+				// 	strconv.FormatInt(e.ID, 10), time.Now().UnixNano()/1e6, "STOCK", e.Remark)
+				// log.Info(sql)
+				// r.sqls <- sql
+				// log.Info(insertordersql)
+				_, err := tx.Exec(insertordersql, p.TacticID, p.TacticType, p.StrategyName, p.ProdID, p.AccountID, p.CombiNo,
+					e.Vol, e.BS, e.Price, e.MarkerNo, "", e.TradeCode, p.AccountID, time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
+					e.ID, time.Now().UnixNano()/1e6, "STOCK", e.Remark)
+				if err != nil {
+					log.Error("EMS record exec fail. %s", err)
+				}
+			}
+			err := tx.Commit()
+			if err != nil {
+				log.Error("EMS record commit fail. %s", err)
+			}
+		}
+	}
+}

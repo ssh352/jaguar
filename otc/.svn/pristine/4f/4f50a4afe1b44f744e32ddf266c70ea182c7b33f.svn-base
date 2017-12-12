@@ -1,0 +1,186 @@
+package com.gf.otc.neeq;
+
+import static org.junit.Assert.*;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+import com.gf.otc.neeq.common.ufx.UfxService;
+import com.gf.otc.neeq.common.ufx.UfxServiceImpl;
+
+public class TestA {
+
+	@BeforeClass
+	public static void setUpBeforeClass() throws Exception {
+	}
+
+	@AfterClass
+	public static void tearDownAfterClass() throws Exception {
+	}
+
+	@Before
+	public void setUp() throws Exception {
+	}
+
+	@After
+	public void tearDown() throws Exception {
+	}
+
+	@Test
+	public void test() {
+		fail("Not yet implemented");
+	}
+	
+	@Test
+	public void test_hs_91001(){
+		System.out.println("----------普通买卖委托：91001-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+			params.put("combi_no", "10072");
+			params.put("account_code", "1007");
+			params.put("market_no", "1");
+			params.put("stock_code", "600000");
+			params.put("entrust_direction", "2");
+			params.put("price_type", "0");
+			params.put("entrust_price", "12.880");
+			params.put("entrust_amount", "300");
+			List<Map<String, String>> result =  ufx.hs_91001(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	@Test
+	public void test_hs_91101(){
+		System.out.println("----------委托撤单：91101-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+//			params.put("combi_no", "10072");
+//			params.put("account_code", "1007");
+			params.put("entrust_no", "297319");
+			List<Map<String, String>> result =  ufx.hs_91101(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}	
+	
+	@Test
+	public void test_hs_32101(){
+		System.out.println("----------证券历史委托查询：32101-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+			params.put("combi_no", "10072");
+			params.put("account_code", "1007");
+			params.put("start_date", "20171001");
+			params.put("end_date", "20171018");
+			List<Map<String, String>> result =  ufx.hs_32101(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	@Test
+	public void test_hs_31001(){
+		System.out.println("----------证券持仓查询：31001-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+			params.put("combi_no", "10072");
+			params.put("account_code", "1007");
+			params.put("market_no", "1");
+			params.put("stock_code", "600000");
+			List<Map<String, String>> result =  ufx.hs_31001(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	@Test
+	public void test_hs_32001(){
+		System.out.println("----------证券委托查询：32001-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+			params.put("combi_no", "10072");
+//			params.put("account_code", "1007");
+//			params.put("market_no", "1");
+//			params.put("stock_code", "600000");
+			List<Map<String, String>> result =  ufx.hs_32001(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	@Test
+	public void test_hs_33001(){
+		System.out.println("----------证券成交查询：33001-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+			params.put("combi_no", "10072");
+			params.put("account_code", "1007");
+//			params.put("market_no", "1");
+			params.put("stock_code", "600000");
+			List<Map<String, String>> result =  ufx.hs_33001(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	@Test
+	public void test_hs_33101(){
+		System.out.println("----------证券历史成交查询：33101-------------");
+		Map<String, String> params = new HashMap<String, String>();
+		UfxService ufx = new UfxServiceImpl();
+		try{
+			String token =  ufx.login("1000", "123qwe");
+			System.out.println("token:" + token);
+			params.put("user_token", token);
+			params.put("combi_no", "10072");
+			params.put("account_code", "1007");
+			params.put("start_date", "20171001");
+			params.put("end_date", "20171017");
+//			params.put("market_no", "1");
+//			params.put("stock_code", "600000");
+			List<Map<String, String>> result =  ufx.hs_33101(params);
+			System.out.println("result==" + result);
+		}catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+}

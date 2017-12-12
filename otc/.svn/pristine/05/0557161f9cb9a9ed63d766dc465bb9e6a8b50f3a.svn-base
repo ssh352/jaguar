@@ -1,0 +1,97 @@
+package option
+
+import (
+	log "github.com/thinkboy/log4go"
+	"github.com/vmihailenco/msgpack"
+	"github.com/widuu/goini"
+	emsbase "quant/emsmodule/base"
+	hqbase "quant/hqmodule/base"
+	"quant/pmsmodule/sbase"
+	"time"
+)
+
+type DeltaHedge struct {
+	base               sbase.Sbase
+	RiskAversionRation float64
+	RiskFreeReturn     float64
+	DelteUp            float64
+	DelteDown          float64
+	HedgeInterval      float64
+	StrikePrice        float64
+	conf               *goini.Config
+	Port               emsbase.Portfolio
+}
+
+func NewDeltaHedge() sbase.IStrategy {
+	var IS sbase.IStrategy = new(DeltaHedge)
+	return IS
+}
+
+func (dh *DeltaHedge) Init() {
+	dh.conf = goini.SetConfig("./conf/strategy/s_deltahedge.ini")
+	dh.base.SubQuoteCodes = dh.conf.GetValue("deltahedge", "subcode")
+	dh.RiskAversionRation = dh.conf.GetFloat64("deltahedge", "risk_aversion_ratio")
+	dh.RiskFreeReturn = dh.conf.GetFloat64("deltahedge", "risk_free_return")
+	dh.DelteUp = dh.conf.GetFloat64("deltahedge", "delta_up")
+	dh.DelteDown = dh.conf.GetFloat64("deltahedge", "delta_down")
+	dh.HedgeInterval = dh.conf.GetFloat64("deltahedge", "hedge_interval")
+	dh.StrikePrice = dh.conf.GetFloat64("deltahedge", "strike_price")
+	dh.base.StrategyName = "DeltaHedge"
+	dh.base.Init()
+}
+
+// open buy : 1
+// open sell: 2
+// close buy : 3
+// close sell : 4
+func (dh *DeltaHedge) generatePortfolio(bs int, mkdat *hqbase.Marketdata) {
+
+}
+
+func (dh *DeltaHedge) getDelta(last float64) float64 {
+	return 0.5
+}
+
+// nothing : 0
+// open buy : 1
+// open sell: 2
+// close buy : 3
+// close sell : 4
+func (dh *DeltaHedge) calcSignal(last float64) int {
+	ret := 0
+	if dh.getDelta(last) > dh.DelteUp {
+		ret = 1
+	} else if dh.getDelta(last) < dh.DelteDown {
+		ret = 2
+	}
+	return ret
+}
+
+func (dh *DeltaHedge) Run(waitchan chan int) {
+	log.Info("DeltaHedge start recevice quote...")
+	for i := 0; true; i++ {
+		msg, err := dh.base.HqModuleSub.RecvMessage(0)
+		if err != nil {
+			log.Error("DeltaHedge recevice data error: %s", err.Error())
+			break
+		}
+		data := msg[1]
+
+		var mkdat hqbase.Marketdata
+		err = msgpack.Unmarshal([]byte(data), &mkdat)
+		if err != nil {
+			log.Info("timestamp:%d %+v\n", time.Now().UnixNano()/1e6, err.Error())
+		} else {
+			log.Info("timestamp:%d %+v\n", time.Now().UnixNano()/1e6, mkdat)
+			if signal := dh.calcSignal(mkdat.Match); signal != 0 {
+				dh.generatePortfolio(signal, &mkdat)
+
+			}
+		}
+
+	}
+	dh.base.Release()
+	log.Info("before write waitchan")
+	waitchan <- 0
+	log.Info("after write waitchan")
+}

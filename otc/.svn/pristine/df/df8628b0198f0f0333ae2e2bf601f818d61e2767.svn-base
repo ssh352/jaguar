@@ -1,0 +1,13 @@
+package algorithm
+
+import (
+	"quant/emsmodule/emsbase"
+)
+
+// IAlgotithm is the interface which should be implemented by each algorithm.
+// Trade will be called by algorithmadmin.go
+type IAlgotithm interface {
+	Trade(emsbase.Portfolio) error // 交易
+	CheckPortStatus()              // 检查组合状态
+	Append()                       // 补单
+}

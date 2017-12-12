@@ -1,0 +1,57 @@
+package main
+
+import (
+	zmq "github.com/pebbe/zmq3"
+	log "github.com/thinkboy/log4go"
+	"github.com/widuu/goini"
+	"os"
+	"quant/helper"
+)
+
+var (
+	conf *goini.Config
+)
+
+func init() {
+	conf = goini.SetConfig(helper.QuantConfigFile)
+	log.LoadConfiguration(helper.QuantLogConfigFile)
+}
+
+type omsmodule struct {
+	pullAddr    string
+	publishAddr string
+	reqAddr     string
+	pull        *zmq.Socket
+}
+
+func (oms *omsmodule) init() {
+	oms.pullAddr = conf.GetStr("omsmodule", "pull_addr")
+	oms.publishAddr = conf.GetStr("omsmodule", "publish_addr")
+	oms.reqAddr = conf.GetStr("omsmodule", "req_addr")
+}
+
+func (oms *omsmodule) listenOrder() {
+	log.Info("OMS listen to: %s", oms.pullAddr)
+	var err error
+	oms.pull, err = zmq.NewSocket(zmq.PULL)
+	if err != nil {
+		log.Error("OMS create pull fail.")
+		os.Exit(-1)
+	}
+	err = oms.pull.Bind(oms.pullAddr)
+	if err != nil {
+		log.Error("OMS bind to %s fail.", oms.publishAddr)
+		os.Exit(-1)
+	}
+}
+
+func (oms *omsmodule) pullorder() {
+	for {
+		data, _ := oms.pull.Recv(0)
+		log.Info(data)
+	}
+}
+
+func main() {
+
+}

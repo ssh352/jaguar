@@ -1,0 +1,59 @@
+package main
+
+import (
+	"github.com/Workiva/go-datastructures/queue"
+	log "github.com/thinkboy/log4go"
+	"quant/emsmodule/adapter/ufxapi"
+	"quant/emsmodule/algorithm"
+	"quant/emsmodule/emsbase"
+	"strings"
+	"time"
+)
+
+var (
+	adaptersMap  = make(map[string]emsbase.ITarde)
+	algorithmMap = make(map[string]algorithm.IAlgotithm)
+)
+
+// NewCommonAlgorithm  is used for create common algorithm pointer.
+func NewCommonAlgorithm() algorithm.IAlgotithm {
+	common := algorithm.Common{AdaptersMap: adaptersMap}
+	return &common
+}
+
+// AlgorithmAdmin manage trade adapters and algorithm trades.
+type AlgorithmAdmin struct {
+	Portqueue *queue.RingBuffer
+}
+
+func (admin *AlgorithmAdmin) init() {
+	adapters := Conf.GetStr("emsmodule", "trade_adapter")
+	for _, name := range strings.Split(adapters, "|") {
+		if name == "UFX" {
+			var itrade emsbase.ITarde = new(ufxapi.UFX)
+			itrade.Init()
+			adaptersMap[name] = itrade
+		}
+	}
+	algorithmMap["COMMON"] = NewCommonAlgorithm()
+}
+
+// Run will be called by emsmodule.
+func (admin *AlgorithmAdmin) Run() {
+	for {
+		if admin.Portqueue.Len() > 0 {
+			port, err := admin.Portqueue.Get()
+			if err == nil {
+				p := port.(emsbase.Portfolio)
+				algo, ok := algorithmMap[p.Algorithm]
+				if ok {
+					algo.Trade(p)
+				} else {
+					log.Error("AlgorithmAdmin can't find \"%s\" algorithm.", p.Algorithm)
+				}
+			}
+		} else {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}

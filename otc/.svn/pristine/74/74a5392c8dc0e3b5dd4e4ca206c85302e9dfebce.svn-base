@@ -1,0 +1,61 @@
+package algorithm
+
+import (
+	"github.com/Workiva/go-datastructures/queue"
+	log "github.com/thinkboy/log4go"
+	"github.com/widuu/goini"
+	"quant/emsmodule/adapter/ufxapi"
+	"quant/emsmodule/emsbase"
+	"strings"
+	"time"
+)
+
+var (
+	adaptersMap  = make(map[string]emsbase.ITarde)
+	algorithmMap = make(map[string]IAlgotithm)
+)
+
+// NewCommon  is used for create common algorithm pointer.
+func NewCommon() IAlgotithm {
+	common := Common{AdaptersMap: adaptersMap}
+	return &common
+
+}
+
+// Admin manage trade adapters and algorithm trades.
+type Admin struct {
+	Portqueue *queue.RingBuffer
+	conf      *goini.Config
+}
+
+func (admin *Admin) Init() {
+	adapters := admin.conf.GetStr("emsmodule", "trade_adapter")
+	for _, name := range strings.Split(adapters, "|") {
+		if name == "UFX" {
+			var itrade emsbase.ITarde = new(ufxapi.UFX)
+			itrade.Init()
+			adaptersMap[name] = itrade
+		}
+	}
+	algorithmMap["COMMON"] = NewCommon()
+}
+
+// Run will be called by emsmodule.
+func (admin *Admin) Run() {
+	for {
+		if admin.Portqueue.Len() > 0 {
+			port, err := admin.Portqueue.Get()
+			if err == nil {
+				p := port.(emsbase.Portfolio)
+				algo, ok := algorithmMap[p.Algorithm]
+				if ok {
+					algo.Trade(p)
+				} else {
+					log.Error("Admin can't find \"%s\" algorithm.", p.Algorithm)
+				}
+			}
+		} else {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}

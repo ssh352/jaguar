@@ -1,0 +1,6 @@
+package quantutil
+
+const (
+	QuantConfigFile    string = "./conf/quant.ini"
+	QuantLogConfigFile string = "./conf/quant_log.xml"
+)

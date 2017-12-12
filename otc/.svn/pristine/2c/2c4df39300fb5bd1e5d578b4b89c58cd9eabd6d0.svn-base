@@ -1,0 +1,3406 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"io/ioutil"
+	"database/sql"
+	"runtime"
+	"quant/hqserver/base"
+	redis "quant/hqserver/marketdata/redis"
+
+	"quant/hqserver/marketdata/struc"
+
+	"github.com/Workiva/go-datastructures/queue"
+	log "github.com/thinkboy/log4go"
+	zmq "github.com/pebbe/zmq3"
+	"github.com/vmihailenco/msgpack"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/widuu/goini"
+)
+
+var (
+	rbmd001map    *queue.RingBuffer
+	rbmd002map    *queue.RingBuffer
+	rbmd004map    *queue.RingBuffer
+	rb        *queue.RingBuffer
+	redisRb   *queue.RingBuffer
+	mysqlRb	  *queue.RingBuffer
+	RedisPool *redis.ConnPool
+	hashValueMap map[string]uint32
+
+	tstart time.Time
+	conf *goini.Config
+
+)
+
+func main() {
+	flag.Parse()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	
+	log.LoadConfiguration("./conf/quant_log.xml")
+	defer log.Close()
+	conf = goini.SetConfig("./conf/quant.ini")
+	
+	
+	var REDIS = map[string]string{
+		"host":         conf.GetValue("redis", "redishost"),
+		"database":     conf.GetValue("redis", "database"),
+		"password":     conf.GetValue("redis", "password"),
+		"maxOpenConns": conf.GetValue("redis", "maxOpenConns"),
+		"maxIdleConns": conf.GetValue("redis", "maxIdleConns"),
+	}
+	RedisPool = redis.InitRedis(REDIS)
+	_, err := RedisPool.Do("PING")
+	if err != nil {
+		log.Info("redis error")
+		panic(err)
+	}
+	// 初始化ringbuffer
+	rbmd001map = queue.NewRingBuffer(2000)
+	rbmd002map = queue.NewRingBuffer(2000)
+	rbmd004map = queue.NewRingBuffer(2000)
+	rb = queue.NewRingBuffer(9000)
+	redisRb = queue.NewRingBuffer(6000)
+	mysqlRb = queue.NewRingBuffer(9000)
+	header := struc.NewHeader(1, 92)
+	hashValueMap = make(map[string]uint32)
+	// 初始化vss登录信息
+	var logonInfo = map[string]string{
+		"SenderCompID":     "CS63                ",
+		"TargetCompID":     "GFZB                ",
+		"Password":         "GFZB            ",
+		"DefaultApplVerID": "1.02                            ",
+		// "SenderCompID":     conf.GetValue("hqmodule", "sz_vss_sendercompid"),
+		// "TargetCompID":     conf.GetValue("hqmodule", "sz_vss_targetcompid"),
+		// "Password":         conf.GetValue("hqmodule", "sz_vss_password"),
+		// "DefaultApplVerID": conf.GetValue("hqmodule", "sz_vss_defaultapplverid"),
+	}
+	fmt.Printf("%v\n", logonInfo)
+	logon := struc.NewLogon(logonInfo)
+	// 初始化vss服务连接信息
+	var CONN = map[string]string{
+		"host":     conf.GetValue("hqmodule", "sz_vss_vsshost"),
+		"protocol": conf.GetValue("hqmodule", "sz_vss_conntype"),
+	}
+	fmt.Printf("%v\n", CONN)
+	// 获取vss服务连接
+	conn, err := login(logon, header, CONN)
+	checkError(err)
+	go sendToMysql()
+	
+	go sendToZMQ()
+	
+	go heartbeat(conn)
+
+	go receiveMarketData(conn)
+	
+	go setToRedisForHashMap()
+	
+	go readfile()
+	
+	go md001map()
+	
+	go md002map()
+	
+	go md004map()
+	wg.Wait()
+	os.Exit(0)
+}
+
+// 心跳
+func heartbeat(conn *net.TCPConn) {
+	var err error
+	header := struc.NewHeader(3, 0)
+	headerlen := 8
+	tailerlen := 4
+	heartbeatbodylen := 0
+	heartbeatmsglen := headerlen + tailerlen + heartbeatbodylen
+	sendmsg := make([]byte, heartbeatmsglen)
+	copy(sendmsg, header.Marshal())
+	copy(sendmsg[8:], ck(sendmsg[:8]))
+	log.Info("heartbeatmsg %v\n", sendmsg)
+	for {
+		time.Sleep(time.Second * time.Duration(60))
+		_, err = conn.Write(sendmsg) //发送HTTP请求头
+		if err != nil {
+			log.Info("%v\n", err)
+		}
+	}
+
+}
+
+// 接收数据，并处理
+func receiveMarketData(conn *net.TCPConn) {
+	headerlen := uint(8) // 消息头长度
+	tailerlen := uint(4) // 消息尾长度
+	for {
+		offset := uint(0)
+		headermsg := make([]byte, headerlen)
+		for {
+			if offset < headerlen {
+				rl, _ := conn.Read(headermsg[offset:])
+				offset += uint(rl)
+			} else {
+				break
+			}
+		}
+
+		// 行情类别
+		msgtype := bytestoint(headermsg[:4])
+		bodylength := bytestoint(headermsg[4:])
+		bodymsg := make([]byte, bodylength)
+		offset = 0
+		for {
+			if offset < bodylength {
+				rl, _ := conn.Read(bodymsg[offset:])
+				offset += uint(rl)
+			} else {
+				break
+			}
+		}
+
+		tailmsg := make([]byte, tailerlen)
+		offset = 0
+		for {
+			if offset < tailerlen {
+				rl, _ := conn.Read(tailmsg[offset:])
+				offset += uint(rl)
+			} else {
+				break
+			}
+		}
+		headerandbody := make([]byte, headerlen+bodylength)
+		copy(headerandbody, headermsg)
+		copy(headerandbody[headerlen:], bodymsg)
+		cksum := ck(headerandbody)
+		for i := uint(0); i < tailerlen; i++ {
+			if tailmsg[i] != cksum[i] {
+				log.Info("cksum error!!!!!\n")
+				break
+			}
+		}
+
+		//	log.Info("body msg:%v\n", bodymsg)
+		/* 消息总长度：行情类别（1） + 消息内容长度 + 消息体结尾：127（1） + 记录末尾：21（1）
+		 * 行情类别：11-深圳股票和ETF(300111)；12-深圳指数(309011)；13-深圳盘后定价信息(300611)
+		 */
+		bodyTotalLen := 1 + len(bodymsg) + 1 + 1
+		mk := make([]byte, bodyTotalLen)
+		//log.Info("bodymsg:%v\n", bodymsg)
+
+		switch msgtype {
+		case 390019:
+			log.Info("390019 市场实时动态\n")
+		case 390013:
+			log.Info("390013 证券实时动态\n")
+		case 390012:
+			log.Info("390012 公告\n")
+		case 300111:
+			log.Info("300111 集中竞价交易业务行情快照\n")
+			//	securityid := bodymsg[13:21]
+			//	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+			// 设置行情类别
+			mk[0] = 0xb
+			// 设置消息体
+			copy(mk[1:1+len(bodymsg)], bodymsg)
+			// 设置消息结尾标志(以127结尾)
+			mk[bodyTotalLen-1-1] = 0x7f
+			// 设置行情记录结束标志（以21结尾）
+			mk[bodyTotalLen-1] = 0x15
+			//	securityid1 := mk[14:22]
+			//	log.Info("!!!!!!!证券代码1:%s %v\n", string(securityid1), securityid1)
+			
+			redisRb.Put(mk)
+			
+			mkd := parseMarketData(mk)
+			md, err := msgpack.Marshal(&mkd)
+			if err != nil {
+				panic(err)
+			}
+			_md := make([]byte, len(md) + 1)
+			//深交所标志
+			_md[0] = 0x1
+			copy(_md[1:], md)
+			rb.Put(_md)
+			mysqlRb.Put(mkd)
+		case 300611:
+			log.Info("300611 盘后定价交易业务行情快照\n")
+			//	securityid := bodymsg[13:21]
+			//	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+			// 设置行情类别
+			mk[0] = 0xd
+			// 设置消息体
+			copy(mk[1:1+len(bodymsg)], bodymsg)
+			// 设置消息结尾标志(以127结尾)
+			mk[bodyTotalLen-1-1] = 0x7f
+			// 设置行情记录结束标志（以21结尾）
+			mk[bodyTotalLen-1] = 0x15
+			//	securityid1 := mk[14:22]
+			//	log.Info("!!!!!!!证券代码1:%s %v\n", string(securityid1), securityid1)
+			
+			redisRb.Put(mk)
+			
+			mkd := parseMarketData(mk)
+			md, err := msgpack.Marshal(&mkd)
+			if err != nil {
+				panic(err)
+			}
+			_md := make([]byte, len(md) + 1)
+			//深交所标志
+			_md[0] = 0x1
+			copy(_md[1:], md)
+			rb.Put(_md)
+			mysqlRb.Put(mkd)
+		case 306311:
+			log.Info("306311 港股实时行情快照\n")
+		case 309011:
+			log.Info("309011 指数行情快照\n")
+			//	securityid := bodymsg[13:21]
+			//	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+			// 设置行情类别
+			mk[0] = 0xc
+			// 设置消息体
+			copy(mk[1:1+len(bodymsg)], bodymsg)
+			// 设置消息结尾标志(以127结尾)
+			mk[bodyTotalLen-1-1] = 0x7f
+			// 设置行情记录结束标志（以21结尾）
+			mk[bodyTotalLen-1] = 0x15
+			//		securityid1 := mk[14:22]
+			//	log.Info("!!!!!!!证券代码1:%s %v\n", string(securityid1), securityid1)
+			
+			redisRb.Put(mk)
+			
+			mkd := parseMarketData(mk)
+			md, err := msgpack.Marshal(&mkd)
+			if err != nil {
+				panic(err)
+			}
+			_md := make([]byte, len(md) + 1)
+			//深交所标志
+			_md[0] = 0x1
+			copy(_md[1:], md)
+			rb.Put(_md)
+			mysqlRb.Put(mkd)
+		case 309111:
+			log.Info("309111 成交量统计指标行情\n")
+		case 300192:
+			log.Info("300192 集中竞价业务逐笔委托行情\n")
+		case 300592:
+			log.Info("300592 协议交易业务逐笔委托行情\n")
+		case 300792:
+			log.Info("300792 转融通证券出借业务逐笔委托行情\n")
+		case 300191:
+			log.Info("300192 集中竞价业务逐笔成交行情\n")
+		case 300591:
+			log.Info("300592 协议交易业务逐笔成交行情\n")
+		case 300791:
+			log.Info("300792 转融通证券出借业务逐笔成交行情\n")
+		default:
+			log.Info("%d wtf!!!\n", msgtype)
+		}
+	}
+
+}
+
+// 登录vss服务
+func login(logon *struc.Logon, header *struc.Header, CONN map[string]string) (*net.TCPConn, error) {
+	headerlen := 8
+	tailerlen := 4
+	logonbodylen := 92
+	logonmsglen := headerlen + tailerlen + logonbodylen
+	sendmsg := make([]byte, logonmsglen)
+	copy(sendmsg, header.Marshal())
+	copy(sendmsg[8:], logon.Marshal())
+	copy(sendmsg[100:], ck(sendmsg[:100]))
+
+	log.Info("host:%s, proto:%s\n", CONN["host"], CONN["protocol"])
+	tcpAddr, err := net.ResolveTCPAddr(CONN["protocol"], CONN["host"]) //获取一个TCP地址信息,TCPAddr
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		return nil, err
+	}
+	conn, err := net.DialTCP("tcp", nil, tcpAddr) //创建一个TCP连接:TCPConn
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		return nil, err
+	}
+	_, err = conn.Write(sendmsg) //发送HTTP请求头
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		return nil, err
+	}
+	result := make([]byte, logonmsglen)
+	llen, err := conn.Read(result)
+	if err != nil {
+		log.Info("3 登陆网关失败 %d\n", llen)
+		return nil, err
+	}
+	log.Info("llen %d\n", llen)
+	log.Info("%v\n", result)
+	if llen > 0 {
+		if result[3] == 1 {
+			log.Info("登陆网关成功\n")
+		} else {
+			log.Info("1 登陆网关失败 %s %v\n", result[3], result[3])
+		}
+	} else {
+		log.Info("2 登陆网关失败 %d %v\n", result[3], result[3])
+	}
+	return conn, nil
+}
+
+// 将行情数据发送到zeroMQ
+func sendToZMQ() {
+	log.Info("-----sendToZMQ-----")
+	publisher, _ := zmq.NewSocket(zmq.PUB)
+	defer publisher.Close()
+	publisher.Bind(conf.GetValue("hqmodule", "publish_addr"))
+	
+	log.Info("------publisher start on:%v------\n", conf.GetValue("hqmodule", "publish_addr"))
+	//Ensure subscriber connection has time to complete
+	time.Sleep(time.Second)
+	
+	var topic string
+	t0 := time.Now()
+	i := 0
+	for {
+
+		msg, _ := rb.Get()
+		b := msg.([]byte)
+		if b[19] == 164 {
+				topic = string(b[10:19])
+		} else if b[20] == 164 {
+			topic = string(b[10:20])
+		} else if b[21] == 164 {
+			topic = string(b[10:21])
+		}
+		log.Info("send len %d, topic %s, rb.len %d", len(b), topic, rb.Len())
+		_, err := publisher.SendMessage(topic, b[1:])
+		if err != nil {
+			log.Error("publisher sendMessage: ", err)
+		}
+		
+		i++
+		if i%1000 == 0 {
+			log.Error("put %d with %v", i, time.Now().Sub(t0))
+		}
+		
+//		if b[0] == 0x1 {
+//			if b[17] != 32 && b[18] != 32 {
+//				topic = string(b[11:19]) + ".SZ"
+//			}else {
+//				topic = string(b[11:17]) + ".SZ"
+//			}
+//			log.Info("send len %d, topic %s, rb.len %d", len(b), topic, rb.Len())
+//			_, err := publisher.SendMessage(topic, b[1:])
+//			if err != nil {
+//				log.Error("publisher sendMessage: ", err)
+//			}
+//			time.Sleep(time.Nanosecond)
+
+//		} else if b[0] == 0x2 {
+//			topic = string(b[11:17]) + ".SH"
+//			log.Info("send len %d, topic %s, rb.len %d", len(b), topic, rb.Len())
+			
+//			_, err := publisher.SendMessage(topic, b[1:])
+//			if err != nil {
+//				log.Error("publisher sendMessage: ", err)
+//			}
+//			time.Sleep(time.Nanosecond)
+//		}
+	}
+}
+
+func sendToMysql() {
+	log.Info("-----------sendToMysql-----------")
+	
+	// Open database connection
+	db, err := sql.Open("mysql", conf.GetValue("mysql", "mysqlusername") + ":" + conf.GetValue("mysql", "mysqlpwd") + "@" + conf.GetValue("mysql", "mysqlurl"))
+	if err != nil {
+		log.Error("open database connection: ", err)
+	}
+	defer db.Close()
+	
+	tx, err := db.Begin()
+	if err != nil {  
+        log.Error("db.Begin err: ", err) 
+    }
+	stmt, err := tx.Prepare("REPLACE INTO realtimemarketdata(Code,Time,Status,PreClose,Open,High,Low,Last,AskPrice1,AskPrice2,AskPrice3,AskPrice4,AskPrice5,AskPrice6,AskPrice7,AskPrice8,AskPrice9,AskPrice10,AskVol1,AskVol2,AskVol3,AskVol4,AskVol5,AskVol6,AskVol7,AskVol8,AskVol9,AskVol10,BidPrice1,BidPrice2,BidPrice3,BidPrice4,BidPrice5,BidPrice6,BidPrice7,BidPrice8,BidPrice9,BidPrice10,BidVol1,BidVol2,BidVol3,BidVol4,BidVol5,BidVol6,BidVol7,BidVol8,BidVol9,BidVol10,NumTrades,Volume,Turnover,TotalBidVol,TotalAskVol,WeightedAvgBidPrice,WeightedAvgAskPrice,IOPV,YieldToMaturity,HighLimited,LowLimited) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+	if err != nil {
+		log.Error("db.Prepare err: ", err)
+	}
+	_ = stmt
+	t0 := time.Now()
+	i := 0
+	for {
+		mysqlRb.Get()		
+//		_, err := stmt.Exec("test",123,"1",123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123,123)
+//		if err != nil {
+//			log.Error("error: %v", err)
+//		}
+
+		if mkd, ok := msg.(base.Marketdata); ok {
+			log.Info("replace into code %s, mysqlRb.len %d", mkd.Code, mysqlRb.Len())
+			_, err := stmt.Exec(mkd.Code,mkd.Time,mkd.Status,mkd.PreClose,mkd.Open,mkd.High,mkd.Low,mkd.Match,mkd.AskPrice[0],mkd.AskPrice[1],mkd.AskPrice[2],mkd.AskPrice[3],mkd.AskPrice[4],mkd.AskPrice[5],mkd.AskPrice[6],mkd.AskPrice[7],mkd.AskPrice[8],mkd.AskPrice[9],mkd.AskVol[0],mkd.AskVol[1],mkd.AskVol[2],mkd.AskVol[3],mkd.AskVol[4],mkd.AskVol[5],mkd.AskVol[6],mkd.AskVol[7],mkd.AskVol[8],mkd.AskVol[9],mkd.BidPrice[0],mkd.BidPrice[1],mkd.BidPrice[2],mkd.BidPrice[3],mkd.BidPrice[4],mkd.BidPrice[5],mkd.BidPrice[6],mkd.BidPrice[7],mkd.BidPrice[8],mkd.BidPrice[9],mkd.BidVol[0],mkd.BidVol[1],mkd.BidVol[2],mkd.BidVol[3],mkd.BidVol[4],mkd.BidVol[5],mkd.BidVol[6],mkd.BidVol[7],mkd.BidVol[8],mkd.BidVol[9],mkd.NumTrades,mkd.Volume,mkd.Turnover,mkd.TotalBidVol,mkd.TotalAskVol,mkd.WeightedAvgBidPrice,mkd.WeightedAvgAskPrice,mkd.IOPV,mkd.YieldToMaturity,mkd.HighLimited,mkd.LowLimited)
+			if err != nil {
+				log.Error("error: %v", err)
+			}
+		} else {
+			log.Error("interface转换Marketdata失败：msg.(base.Marketdata)")
+		}
+		
+		i++
+		if i%1000 == 0 {
+			tx.Commit()
+			log.Error("insert %d with %v", i, time.Now().Sub(t0))
+			
+			tx, err = db.Begin() 
+			if err != nil {  
+		        log.Error("db.Begin err: ", err) 
+		    }
+			
+			stmt, err = tx.Prepare("REPLACE INTO realtimemarketdata(Code,Time,Status,PreClose,Open,High,Low,Last,AskPrice1,AskPrice2,AskPrice3,AskPrice4,AskPrice5,AskPrice6,AskPrice7,AskPrice8,AskPrice9,AskPrice10,AskVol1,AskVol2,AskVol3,AskVol4,AskVol5,AskVol6,AskVol7,AskVol8,AskVol9,AskVol10,BidPrice1,BidPrice2,BidPrice3,BidPrice4,BidPrice5,BidPrice6,BidPrice7,BidPrice8,BidPrice9,BidPrice10,BidVol1,BidVol2,BidVol3,BidVol4,BidVol5,BidVol6,BidVol7,BidVol8,BidVol9,BidVol10,NumTrades,Volume,Turnover,TotalBidVol,TotalAskVol,WeightedAvgBidPrice,WeightedAvgAskPrice,IOPV,YieldToMaturity,HighLimited,LowLimited) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+			if err != nil {
+				log.Error("db.Prepare err: ", err)
+			}
+		}
+	}
+}
+
+// 查询redis行情，并解析
+func queryRedis(codes string) {
+	codelist := strings.Split(codes, ",")
+	md, err := RedisPool.GetMHashMapString("MarketMap_test", codelist)
+	//	md, err := RedisPool.GetAllHashMapString("MarketMap_test")
+	if err != nil {
+		log.Error("QueryStock ", err)
+	}
+	//	log.Info("md:%v\n", md)
+	var mkd base.Marketdata
+	for i := 0; i < len(md); i++ {
+		log.Info("反序列化redis数据库二进制数据！")
+		data := md[i]
+		bodymsg := []byte(data)
+		mkd = parseMarketData(bodymsg)
+		b, err := msgpack.Marshal(&mkd)
+		if err != nil {
+			panic(err)
+		}
+		log.Info("=========msgpack.b:%v\n", b)
+		var marketd base.Marketdata
+		err = msgpack.Unmarshal(b, &marketd)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("marketd:%+v\n", marketd)
+		log.Info("mkd:%+v\n", mkd)
+	}
+}
+
+// 将数据插入redis
+func setToRedisForHashMap() {
+	data := make(map[string]interface{})
+	i := 0
+	var code string
+	for {
+		//	msg, _ := rb.Get()
+		msg, _ := redisRb.Get()
+		log.Info("redisRB.len: %d", redisRb.Len())
+		b := msg.([]byte)
+		//	code := string(b[14:22])
+		//		log.Info("code[%s], b:%v\n", code, b)
+		if b[20] != 32 && b[21] != 32 {
+			code = string(b[14:22]) + ".SZ"
+		} else {
+			code = string(b[14:20]) + ".SZ"
+		}
+		data[code] = string(b)
+		if len(data) == 200 {
+			md, err := RedisPool.SetHashMap("MarketMap_test", data)
+			//	log.Info("data:%v\n", data)
+			if err != nil {
+				log.Error("insert to HashMap error: ", err)
+			}
+			log.Info("插入redis数据库成功!插入记录：%v", md)
+			for k, _ := range data {
+				delete(data, k)
+			}
+		}
+		i++
+	}
+}
+func parseMarketData(bodymsg []byte) base.Marketdata {
+	var mkd base.Marketdata
+	mktype := bytestoint(bodymsg[:1])
+	log.Info("!!!!!!!行情类型：%d\n", mktype)
+	timestamp := bytestoint(bodymsg[1:9])
+	log.Info("!!!!!!!时间戳:%d\n", timestamp)
+	mkd.Time = int32(timestamp % 1000000000)
+	channelno := bytestoint(bodymsg[9:11])
+	log.Info("!!!!!!!频道代码:%d\n", channelno)
+	mdstreamid := bodymsg[11:14]
+	log.Info("!!!!!!!行情类别:%s %v\n", string(mdstreamid), mdstreamid)
+	var securityid []byte
+	if bodymsg[20] != 32 && bodymsg[21] != 32 {
+		securityid = bodymsg[14:22]
+	} else if bodymsg[20] != 32 && bodymsg[21] == 32 {
+		securityid = bodymsg[14:21]
+	} else {
+		securityid = bodymsg[14:20]
+	}
+	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+	code := string(securityid) + ".SZ"
+	mkd.Code = code
+	securityidsource := bodymsg[22:26]
+	log.Info("!!!!!!!证券代码源:%s %v\n", string(securityidsource), securityidsource)
+	tradingPhaseCode := bodymsg[26:34]
+	log.Info("!!!!!!!产品所处的交易阶段代码:%s %v\n", string(tradingPhaseCode), tradingPhaseCode)
+	switch string(bodymsg[26:27]) {
+	case "S":
+		// 开市前
+		mkd.Status = "0"
+	case "O":
+		// 开盘集合竞价
+		mkd.Status = "I"
+	case "T":
+		// 连续竞价阶段
+		mkd.Status = "O"
+	case "H":
+		// 盘中临时停市
+		mkd.Status = "W"
+	case "C":
+		// 收盘集合竞价
+		mkd.Status = "J"
+	case "E":
+		// 闭市
+		mkd.Status = "C"
+	}
+	preClosePx := bytestoint(bodymsg[34:42])
+	log.Info("!!!!!!!昨收盘:%d\n", preClosePx)
+	mkd.PreClose = float64(preClosePx) / 10000.0
+	numTrades := bytestoint(bodymsg[42:50])
+	log.Info("!!!!!!!成交笔数:%d\n", numTrades)
+	mkd.NumTrades = int32(numTrades)
+	totalVolumeTrade := bytestoint(bodymsg[50:58])
+	log.Info("!!!!!!!成交总量:%d\n", totalVolumeTrade)
+	mkd.Volume = int64(totalVolumeTrade)
+	totalValueTrade := bytestoint(bodymsg[58:66])
+	log.Info("!!!!!!!成交总金额:%d %v\n", totalValueTrade, bodymsg[58:66])
+	mkd.Turnover = int64(totalValueTrade) / 10000
+	noMdEntries := bytestoint(bodymsg[66:70])
+	log.Info("!!!!!!!行情条目个数:%d\n", noMdEntries)
+	// 深圳股票和ETF
+	if mktype == 11 {
+		byteoffset := uint(0)
+		for i := uint(0); i < noMdEntries; i++ {
+			mDEntryType := bodymsg[70+byteoffset : 72+byteoffset]
+			log.Info("!!!!!!![%d] 行情条目类别:%s\n", i+1, string(mDEntryType))
+			mDPriceLevel := bytestoint(bodymsg[88+byteoffset : 90+byteoffset])
+			log.Info("!!!!!!![%d] 买卖盘档位:%d\n", i+1, mDPriceLevel)
+			mDEntryPx := bytestoint(bodymsg[72+byteoffset : 80+byteoffset])
+			log.Info("!!!!!!![%d] 价格:%d\n", i+1, mDEntryPx)
+			mDEntrySize := bytestoint(bodymsg[80+byteoffset : 88+byteoffset])
+			log.Info("!!!!!!![%d] 数量:%d\n", i+1, mDEntrySize)
+			switch strings.TrimSpace(string(mDEntryType)) {
+			case "0":
+				// 买入
+				switch mDPriceLevel {
+				case 1:
+					// 买1
+					mkd.BidPrice[0] = float64(mDEntryPx) / 1000000.0
+					mkd.BidVol[0] = int32(mDEntrySize)
+				case 2:
+					// 买2
+					mkd.BidPrice[1] = float64(mDEntryPx) / 1000000.0
+					mkd.BidVol[1] = int32(mDEntrySize)
+				case 3:
+					// 买3
+					mkd.BidPrice[2] = float64(mDEntryPx) / 1000000.0
+					mkd.BidVol[2] = int32(mDEntrySize)
+				case 4:
+					// 买4
+					mkd.BidPrice[3] = float64(mDEntryPx) / 1000000.0
+					mkd.BidVol[3] = int32(mDEntrySize)
+				case 5:
+					// 买5
+					mkd.BidPrice[4] = float64(mDEntryPx) / 1000000.0
+					mkd.BidVol[4] = int32(mDEntrySize)
+				}
+			case "1":
+				// 卖出
+				switch mDPriceLevel {
+				case 1:
+					// 卖1
+					mkd.AskPrice[0] = float64(mDEntryPx) / 1000000.0
+					mkd.AskVol[0] = int32(mDEntrySize)
+				case 2:
+					// 卖2
+					mkd.AskPrice[1] = float64(mDEntryPx) / 1000000.0
+					mkd.AskVol[1] = int32(mDEntrySize)
+				case 3:
+					// 卖3
+					mkd.AskPrice[2] = float64(mDEntryPx) / 1000000.0
+					mkd.AskVol[2] = int32(mDEntrySize)
+				case 4:
+					// 卖4
+					mkd.AskPrice[3] = float64(mDEntryPx) / 1000000.0
+					mkd.AskVol[3] = int32(mDEntrySize)
+				case 5:
+					// 卖5
+					mkd.AskPrice[4] = float64(mDEntryPx) / 1000000.0
+					mkd.AskVol[4] = int32(mDEntrySize)
+				}
+			case "2":
+				// 最近价
+				mkd.Match = float64(mDEntryPx) / 1000000.0
+			case "4":
+				// 开盘价
+				mkd.Open = float64(mDEntryPx) / 1000000.0
+			case "7":
+				// 最高价
+				mkd.High = float64(mDEntryPx) / 1000000.0
+			case "8":
+				// 最低价
+				mkd.Low = float64(mDEntryPx) / 1000000.0
+			case "x1":
+				// 升跌一
+			case "x2":
+				// 升跌二
+			case "x3":
+				// 买入汇总（总量及加权平均价）
+				mkd.WeightedAvgBidPrice = float64(mDEntryPx) / 1000000.0
+			case "x4":
+				// 卖出汇总（总量及加权平均价）
+				mkd.WeightedAvgAskPrice = float64(mDEntryPx) / 1000000.0
+			case "x5":
+				// 股票市盈率一
+			case "x6":
+				// 股票市盈率二
+			case "x7":
+				// 基金T-1日净值
+			case "x8":
+				// 基金实时参考净值（包括ETF的IOPV）
+				mkd.IOPV = float64(mDEntryPx) / 1000000.0
+			case "x9":
+				// 权证溢价率
+			case "xe":
+				// 涨停价
+				mkd.HighLimited = float64(mDEntryPx) / 1000000.0
+			case "xf":
+				// 跌停价
+				mkd.LowLimited = float64(mDEntryPx) / 1000000.0
+			case "xg":
+				// 合约持仓量
+			}
+
+			numberOfOrders := bytestoint(bodymsg[90+byteoffset : 98+byteoffset])
+			log.Info("!!!!!!![%d] 价位总委托笔数:%d\n", i+1, numberOfOrders)
+			noOrders := bytestoint(bodymsg[98+byteoffset : 102+byteoffset])
+			log.Info("!!!!!!![%d] 价位揭示委托笔数:%d\n", i+1, noOrders)
+			j := uint(0)
+			for ; j < noOrders; j++ {
+				orderQty := bytestoint(bodymsg[102+byteoffset+8*j : 110+byteoffset+8*j])
+				log.Info("!!!!!!![%d] [%d] 委托数量:%d\n", i+1, j+1, orderQty)
+			}
+			byteoffset += j*8 + 32
+		}
+	}
+
+	// 深圳指数
+	if mktype == 12 {
+		byteoffset := uint(0)
+		for i := uint(0); i < noMdEntries; i++ {
+			mDEntryType := bodymsg[70+byteoffset : 72+byteoffset]
+			log.Info("!!!!!!![%d] 行情条目类别:%s\n", i+1, string(mDEntryType))
+			mDEntryPx := bytestoint(bodymsg[72+byteoffset : 80+byteoffset])
+			log.Info("!!!!!!![%d] 指数点位:%d\n", i+1, mDEntryPx)
+			switch strings.TrimSpace(string(mDEntryType)) {
+			case "3":
+				// 当前指数
+				mkd.Match = float64(mDEntryPx) / 1000000.0
+			case "xa":
+				// 昨日收盘指数
+				mkd.PreClose = float64(mDEntryPx) / 1000000.0
+			case "xb":
+				// 开盘指数
+				mkd.Open = float64(mDEntryPx) / 1000000.0
+			case "xc":
+				// 最高指数
+				mkd.High = float64(mDEntryPx) / 1000000.0
+			case "xd":
+				// 最低指数
+				mkd.Low = float64(mDEntryPx) / 1000000.0
+			}
+			byteoffset += 10
+		}
+	}
+
+	// 深圳盘后定价信息
+	if mktype == 13 {
+		byteoffset := uint(0)
+		for i := uint(0); i < noMdEntries; i++ {
+			mDEntryType := bodymsg[70+byteoffset : 72+byteoffset]
+			log.Info("!!!!!!![%d] 行情条目类别:%s\n", i+1, string(mDEntryType))
+			mDEntryPx := bytestoint(bodymsg[72+byteoffset : 80+byteoffset])
+			log.Info("!!!!!!![%d] 价格:%d\n", i+1, mDEntryPx)
+			mDEntrySize := bytestoint(bodymsg[80+byteoffset : 88+byteoffset])
+			log.Info("!!!!!!![%d] 数量:%d\n", i+1, mDEntrySize)
+			switch strings.TrimSpace(string(mDEntryType)) {
+			case "0":
+				// 买入
+				mkd.BidPrice[0] = float64(mDEntryPx) / 1000000.0
+				mkd.BidVol[0] = int32(mDEntrySize)
+
+			case "1":
+				// 卖出
+				mkd.AskPrice[0] = float64(mDEntryPx) / 1000000.0
+				mkd.AskVol[0] = int32(mDEntrySize)
+			}
+			byteoffset += 18
+		}
+	}
+	return mkd
+}
+func ck(msg []byte) []byte {
+	sum := uint(0)
+	l := len(msg)
+	for i := 0; i < l; i++ {
+		sum += uint(msg[i])
+	}
+	ck := uint(sum % 256)
+	data := make([]byte, 4)
+	data[0] = (byte)((ck & 0xFF000000) >> 24)
+	data[1] = (byte)((ck & 0x00FF0000) >> 16)
+	data[2] = (byte)((ck & 0x0000FF00) >> 8)
+	data[3] = (byte)(ck & 0x000000FF)
+	return data
+}
+
+func bytestoint(data []byte) (x1 uint) {
+	x1 = uint(0)
+	l := len(data)
+	for i := 0; i < l; i++ {
+		if i != l-1 {
+			shift := uint(8 * i)
+			x1 |= uint(data[l-1-i]) & 0XFF << shift
+		} else {
+			x1 |= uint(data[i]) & 0XFF
+		}
+	}
+	return
+}
+
+func checkError(err error) {
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		panic(err)
+	}
+}
+
+func readfile(){
+
+	for {
+		fd, _ := ioutil.ReadFile(conf.GetValue("hqmodule", "sh_filename"))
+		l := len(fd) - 11
+		md001 := 0
+		md002 := 0
+		md004 := 0
+		tstart = time.Now()
+		for i := 0; i < l; i++ {
+			if fd[i] == 0x0A {
+				if fd[i+5] == 0x33 {
+					i += 399
+					continue
+				} else if fd[i+5] == 0x31 {
+					//判断和上次行情的哈希值是否相等
+//					code := string(fd[i+7:i+13])
+					
+//					oldValue, ok := hashValueMap[code]
+//					if(ok){
+//						value := adler32.Checksum(fd[i+7 : i+150])
+//						if value == oldValue {
+//							continue
+//						}
+//						hashValueMap[code] = value
+//					}else{
+//						value := adler32.Checksum(fd[i+7 : i+150])
+//						hashValueMap[code] = value
+//					}
+					
+					md001++
+					rbmd001map.Put(fd[i+7 : i+150])
+					i += 149
+				} else if fd[i+5] == 0x32 {
+					//判断和上次行情的哈希值是否相等
+//					code := string(fd[i+7:i+13])
+					
+//					oldValue, ok := hashValueMap[code]
+//					if(ok){
+//						value := adler32.Checksum(fd[i+7 : i+400])
+//						if value == oldValue {
+//							continue
+//						}
+//						hashValueMap[code] = value
+//					}else{
+//						value := adler32.Checksum(fd[i+7 : i+400])
+//						hashValueMap[code] = value
+//					}
+					
+					md002++
+					rbmd002map.Put(fd[i+7 : i+400])
+					i += 399
+				} else if fd[i+5] == 0x34 {
+					//判断和上次行情的哈希值是否相等
+//					code := string(fd[i+7:i+13])
+					
+//					oldValue, ok := hashValueMap[code]
+//					if(ok){
+//						value := adler32.Checksum(fd[i+7 : i+424])
+//						if value == oldValue {
+//							continue
+//						}
+//						hashValueMap[code] = value
+//					}else{
+//						value := adler32.Checksum(fd[i+7 : i+424])
+//						hashValueMap[code] = value
+//					}
+					
+					md004++
+					rbmd004map.Put(fd[i+7 : i+424])
+					i += 423
+				} else {
+					//fmt.Println("error")
+				}
+				
+			}
+			
+		}
+
+		log.Info("need to deal num:md001=%d,md002=%d,md004=%d", md001, md002, md004)
+
+		
+		interval, _ := strconv.Atoi(conf.GetValue("hqmodule", "sh_readfileinterval"))
+		time.Sleep(time.Duration(interval) * time.Millisecond)
+	}
+}
+
+func md001map() {
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func(seq int) {
+			count := 0
+			fmt.Println("start ", seq)
+			tt1 := time.Now()
+			for {
+				count++
+				msg, _ := rbmd001map.Get()
+				b := msg.([]byte)
+				code := make([]byte, 6)
+				copy(code, b[0:6])
+				
+				var volume int64
+				volume = 0
+				for i := 0; i < 16; i++ {
+					if b[16+i] == 49 {
+						volume += powb(10, 15-i)
+					} else if b[16+i] == 50 {
+						volume += 2 * powb(10, 15-i)
+					} else if b[16+i] == 51 {
+						volume += 3 * powb(10, 15-i)
+					} else if b[16+i] == 52 {
+						volume += 4 * powb(10, 15-i)
+					} else if b[16+i] == 53 {
+						volume += 5 * powb(10, 15-i)
+					} else if b[16+i] == 54 {
+						volume += 6 * powb(10, 15-i)
+					} else if b[16+i] == 55 {
+						volume += 7 * powb(10, 15-i)
+					} else if b[16+i] == 56 {
+						volume += 8 * powb(10, 15-i)
+					} else if b[16+i] == 57 {
+						volume += 9 * powb(10, 15-i)
+					} else {
+					}
+				}
+				var amount1 int64
+				amount1 = 0
+				for i := 0; i < 15; i++ {
+					if i == 14 || i == 13 {
+						continue
+					}
+					if b[33+i] == 49 {
+						amount1 += powb(10, 14-i)
+					} else if b[33+i] == 50 {
+						amount1 += 2 * powb(10, 14-i)
+					} else if b[33+i] == 51 {
+						amount1 += 3 * powb(10, 14-i)
+					} else if b[33+i] == 52 {
+						amount1 += 4 * powb(10, 14-i)
+					} else if b[33+i] == 53 {
+						amount1 += 5 * powb(10, 14-i)
+					} else if b[33+i] == 54 {
+						amount1 += 6 * powb(10, 14-i)
+					} else if b[33+i] == 55 {
+						amount1 += 7 * powb(10, 14-i)
+					} else if b[33+i] == 56 {
+						amount1 += 8 * powb(10, 14-i)
+					} else if b[33+i] == 57 {
+						amount1 += 9 * powb(10, 14-i)
+					} else {
+					}
+				}
+
+				for i := 0; i < 2; i++ {
+					if b[47+i] == 49 {
+						amount1 += powb(10, 1-i)
+					} else if b[47+i] == 50 {
+						amount1 += 2 * powb(10, 1-i)
+					} else if b[47+i] == 51 {
+						amount1 += 3 * powb(10, 1-i)
+					} else if b[47+i] == 52 {
+						amount1 += 4 * powb(10, 1-i)
+					} else if b[47+i] == 53 {
+						amount1 += 5 * powb(10, 1-i)
+					} else if b[47+i] == 54 {
+						amount1 += 6 * powb(10, 1-i)
+					} else if b[47+i] == 55 {
+						amount1 += 7 * powb(10, 1-i)
+					} else if b[47+i] == 56 {
+						amount1 += 8 * powb(10, 1-i)
+					} else if b[47+i] == 57 {
+						amount1 += 9 * powb(10, 1-i)
+					} else {
+					}
+				}
+
+				amount := amount1
+				var lastprice1 int64
+				lastprice1 = 0
+				for i := 0; i < 10; i++ {
+					if i == 6 || i == 7 || i == 8 || i == 9 {
+						continue
+					}
+					if b[50+i] == 49 {
+						lastprice1 += powb(10, 9-i)
+					} else if b[50+i] == 50 {
+						lastprice1 += 2 * powb(10, 9-i)
+					} else if b[50+i] == 51 {
+						lastprice1 += 3 * powb(10, 9-i)
+					} else if b[50+i] == 52 {
+						lastprice1 += 4 * powb(10, 9-i)
+					} else if b[50+i] == 53 {
+						lastprice1 += 5 * powb(10, 9-i)
+					} else if b[50+i] == 54 {
+						lastprice1 += 6 * powb(10, 9-i)
+					} else if b[50+i] == 55 {
+						lastprice1 += 7 * powb(10, 9-i)
+					} else if b[50+i] == 56 {
+						lastprice1 += 8 * powb(10, 9-i)
+					} else if b[50+i] == 57 {
+						lastprice1 += 9 * powb(10, 9-i)
+					} else {
+					}
+				}
+				for i := 0; i < 4; i++ {
+					if b[57+i] == 49 {
+						lastprice1 += powb(10, 3-i)
+					} else if b[57+i] == 50 {
+						lastprice1 += 2 * powb(10, 3-i)
+					} else if b[57+i] == 51 {
+						lastprice1 += 3 * powb(10, 3-i)
+					} else if b[57+i] == 52 {
+						lastprice1 += 4 * powb(10, 3-i)
+					} else if b[57+i] == 53 {
+						lastprice1 += 5 * powb(10, 3-i)
+					} else if b[57+i] == 54 {
+						lastprice1 += 6 * powb(10, 3-i)
+					} else if b[57+i] == 55 {
+						lastprice1 += 7 * powb(10, 3-i)
+					} else if b[57+i] == 56 {
+						lastprice1 += 8 * powb(10, 3-i)
+					} else if b[57+i] == 57 {
+						lastprice1 += 9 * powb(10, 3-i)
+					} else {
+					}
+				}
+
+				lastprice := lastprice1
+				var open1 int64
+				open1 = 0
+				for i := 0; i < 10; i++ {
+					if i == 6 || i == 7 || i == 8 || i == 9 {
+						continue
+					}
+					if b[62+i] == 49 {
+						open1 += powb(10, 9-i)
+					} else if b[62+i] == 50 {
+						open1 += 2 * powb(10, 9-i)
+					} else if b[62+i] == 51 {
+						open1 += 3 * powb(10, 9-i)
+					} else if b[62+i] == 52 {
+						open1 += 4 * powb(10, 9-i)
+					} else if b[62+i] == 53 {
+						open1 += 5 * powb(10, 9-i)
+					} else if b[62+i] == 54 {
+						open1 += 6 * powb(10, 9-i)
+					} else if b[62+i] == 55 {
+						open1 += 7 * powb(10, 9-i)
+					} else if b[62+i] == 56 {
+						open1 += 8 * powb(10, 9-i)
+					} else if b[62+i] == 57 {
+						open1 += 9 * powb(10, 9-i)
+					} else {
+					}
+				}
+				for i := 0; i < 4; i++ {
+					if b[69+i] == 49 {
+						open1 += powb(10, 3-i)
+					} else if b[69+i] == 50 {
+						open1 += 2 * powb(10, 3-i)
+					} else if b[69+i] == 51 {
+						open1 += 3 * powb(10, 3-i)
+					} else if b[69+i] == 52 {
+						open1 += 4 * powb(10, 3-i)
+					} else if b[69+i] == 53 {
+						open1 += 5 * powb(10, 3-i)
+					} else if b[69+i] == 54 {
+						open1 += 6 * powb(10, 3-i)
+					} else if b[69+i] == 55 {
+						open1 += 7 * powb(10, 3-i)
+					} else if b[69+i] == 56 {
+						open1 += 8 * powb(10, 3-i)
+					} else if b[69+i] == 57 {
+						open1 += 9 * powb(10, 3-i)
+					} else {
+					}
+				}
+
+				open := open1
+				var high1 int64
+				high1 = 0
+				for i := 0; i < 10; i++ {
+					if i == 6 || i == 7 || i == 8 || i == 9 {
+						continue
+					}
+					if b[74+i] == 49 {
+						high1 += powb(10, 9-i)
+					} else if b[74+i] == 50 {
+						high1 += 2 * powb(10, 9-i)
+					} else if b[74+i] == 51 {
+						high1 += 3 * powb(10, 9-i)
+					} else if b[74+i] == 52 {
+						high1 += 4 * powb(10, 9-i)
+					} else if b[74+i] == 53 {
+						high1 += 5 * powb(10, 9-i)
+					} else if b[74+i] == 54 {
+						high1 += 6 * powb(10, 9-i)
+					} else if b[74+i] == 55 {
+						high1 += 7 * powb(10, 9-i)
+					} else if b[74+i] == 56 {
+						high1 += 8 * powb(10, 9-i)
+					} else if b[74+i] == 57 {
+						high1 += 9 * powb(10, 9-i)
+					} else {
+					}
+				}
+
+				for i := 0; i < 4; i++ {
+					if b[81+i] == 49 {
+						high1 += powb(10, 3-i)
+					} else if b[81+i] == 50 {
+						high1 += 2 * powb(10, 3-i)
+					} else if b[81+i] == 51 {
+						high1 += 3 * powb(10, 3-i)
+					} else if b[81+i] == 52 {
+						high1 += 4 * powb(10, 3-i)
+					} else if b[81+i] == 53 {
+						high1 += 5 * powb(10, 3-i)
+					} else if b[81+i] == 54 {
+						high1 += 6 * powb(10, 3-i)
+					} else if b[81+i] == 55 {
+						high1 += 7 * powb(10, 3-i)
+					} else if b[81+i] == 56 {
+						high1 += 8 * powb(10, 3-i)
+					} else if b[81+i] == 57 {
+						high1 += 9 * powb(10, 3-i)
+					} else {
+					}
+				}
+
+				high := high1
+				var low1 int64
+				low1 = 0
+				for i := 0; i < 10; i++ {
+					if i == 6 || i == 7 || i == 8 || i == 9 {
+						continue
+					}
+					if b[86+i] == 49 {
+						low1 += powb(10, 9-i)
+					} else if b[86+i] == 50 {
+						low1 += 2 * powb(10, 9-i)
+					} else if b[86+i] == 51 {
+						low1 += 3 * powb(10, 9-i)
+					} else if b[86+i] == 52 {
+						low1 += 4 * powb(10, 9-i)
+					} else if b[86+i] == 53 {
+						low1 += 5 * powb(10, 9-i)
+					} else if b[86+i] == 54 {
+						low1 += 6 * powb(10, 9-i)
+					} else if b[86+i] == 55 {
+						low1 += 7 * powb(10, 9-i)
+					} else if b[86+i] == 56 {
+						low1 += 8 * powb(10, 9-i)
+					} else if b[86+i] == 57 {
+						low1 += 9 * powb(10, 9-i)
+					} else {
+					}
+				}
+				for i := 0; i < 4; i++ {
+					if b[93+i] == 49 {
+						low1 += powb(10, 3-i)
+					} else if b[93+i] == 50 {
+						low1 += 2 * powb(10, 3-i)
+					} else if b[93+i] == 51 {
+						low1 += 3 * powb(10, 3-i)
+					} else if b[93+i] == 52 {
+						low1 += 4 * powb(10, 3-i)
+					} else if b[93+i] == 53 {
+						low1 += 5 * powb(10, 3-i)
+					} else if b[93+i] == 54 {
+						low1 += 6 * powb(10, 3-i)
+					} else if b[93+i] == 55 {
+						low1 += 7 * powb(10, 3-i)
+					} else if b[93+i] == 56 {
+						low1 += 8 * powb(10, 3-i)
+					} else if b[93+i] == 57 {
+						low1 += 9 * powb(10, 3-i)
+					} else {
+					}
+				}
+
+				low := low1
+				var tradeprice1 int64
+				tradeprice1 = 0
+				for i := 0; i < 10; i++ {
+					if i == 6 || i == 7 || i == 8 || i == 9 {
+						continue
+					}
+					if b[98+i] == 49 {
+						tradeprice1 += powb(10, 9-i)
+					} else if b[98+i] == 50 {
+						tradeprice1 += 2 * powb(10, 9-i)
+					} else if b[98+i] == 51 {
+						tradeprice1 += 3 * powb(10, 9-i)
+					} else if b[98+i] == 52 {
+						tradeprice1 += 4 * powb(10, 9-i)
+					} else if b[98+i] == 53 {
+						tradeprice1 += 5 * powb(10, 9-i)
+					} else if b[98+i] == 54 {
+						tradeprice1 += 6 * powb(10, 9-i)
+					} else if b[98+i] == 55 {
+						tradeprice1 += 7 * powb(10, 9-i)
+					} else if b[98+i] == 56 {
+						tradeprice1 += 8 * powb(10, 9-i)
+					} else if b[98+i] == 57 {
+						tradeprice1 += 9 * powb(10, 9-i)
+					} else {
+					}
+				}
+				for i := 0; i < 4; i++ {
+					if b[105+i] == 49 {
+						tradeprice1 += powb(10, 3-i)
+					} else if b[105+i] == 50 {
+						tradeprice1 += 2 * powb(10, 3-i)
+					} else if b[105+i] == 51 {
+						tradeprice1 += 3 * powb(10, 3-i)
+					} else if b[105+i] == 52 {
+						tradeprice1 += 4 * powb(10, 3-i)
+					} else if b[105+i] == 53 {
+						tradeprice1 += 5 * powb(10, 3-i)
+					} else if b[105+i] == 54 {
+						tradeprice1 += 6 * powb(10, 3-i)
+					} else if b[105+i] == 55 {
+						tradeprice1 += 7 * powb(10, 3-i)
+					} else if b[105+i] == 56 {
+						tradeprice1 += 8 * powb(10, 3-i)
+					} else if b[105+i] == 57 {
+						tradeprice1 += 9 * powb(10, 3-i)
+					} else {
+					}
+				}
+
+				tradeprice := tradeprice1
+				var closepx1 int64
+				closepx1 = 0
+				for i := 0; i < 10; i++ {
+					if i == 6 || i == 7 || i == 8 || i == 9 {
+						continue
+					}
+					if b[110+i] == 49 {
+						closepx1 += powb(10, 9-i)
+					} else if b[110+i] == 50 {
+						closepx1 += 2 * powb(10, 9-i)
+					} else if b[110+i] == 51 {
+						closepx1 += 3 * powb(10, 9-i)
+					} else if b[110+i] == 52 {
+						closepx1 += 4 * powb(10, 9-i)
+					} else if b[110+i] == 53 {
+						closepx1 += 5 * powb(10, 9-i)
+					} else if b[110+i] == 54 {
+						closepx1 += 6 * powb(10, 9-i)
+					} else if b[110+i] == 55 {
+						closepx1 += 7 * powb(10, 9-i)
+					} else if b[110+i] == 56 {
+						closepx1 += 8 * powb(10, 9-i)
+					} else if b[110+i] == 57 {
+						closepx1 += 9 * powb(10, 9-i)
+					} else {
+					}
+				}
+
+				for i := 0; i < 4; i++ {
+					if b[117+i] == 49 {
+						closepx1 += powb(10, 3-i)
+					} else if b[117+i] == 50 {
+						closepx1 += 2 * powb(10, 3-i)
+					} else if b[117+i] == 51 {
+						closepx1 += 3 * powb(10, 3-i)
+					} else if b[117+i] == 52 {
+						closepx1 += 4 * powb(10, 3-i)
+					} else if b[117+i] == 53 {
+						closepx1 += 5 * powb(10, 3-i)
+					} else if b[117+i] == 54 {
+						closepx1 += 6 * powb(10, 3-i)
+					} else if b[117+i] == 55 {
+						closepx1 += 7 * powb(10, 3-i)
+					} else if b[117+i] == 56 {
+						closepx1 += 8 * powb(10, 3-i)
+					} else if b[117+i] == 57 {
+						closepx1 += 9 * powb(10, 3-i)
+					} else {
+					}
+				}
+
+				closepx := closepx1
+
+				status1 := b[122]
+				var status2 int64
+				status2 = 0
+				for i := 0; i < 3; i++ {
+					if b[123+i] == 49 {
+						status2 += powb(10, 2-i)
+					} else {
+					}
+				}
+				timestamp := make([]byte, 9)
+				//copy(timestamp, b[131:143])
+				copy(timestamp[0:2], b[131:133])
+				copy(timestamp[2:4], b[134:136])
+				copy(timestamp[4:6], b[137:139])
+				copy(timestamp[6:9], b[140:143])
+
+				debug := false
+				if debug {
+					fmt.Printf("\n---[code|%v] [volume|%d] [amount|%f] [lastprice|%f]", code, volume, amount, lastprice)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] [tradeprice|%f] [closepx|%f]", open, high, low, tradeprice, closepx)
+					fmt.Printf(" [status1|%v] [status2|%d]", status1, status2)
+					fmt.Printf("---\n")
+				}
+				//msgpack序列化
+				_code := string(code) + ".SH"
+				
+				timestamp_buf, err := strconv.ParseInt(string(timestamp), 10, 32)
+				if err != nil {
+					log.Error("string to int32 err: ", err)
+				}
+				_time := int32(timestamp_buf)
+				
+				_preClose := float64(lastprice)/10000.0
+				_open := float64(open)/10000.0
+				_high := float64(high)/10000.0
+				_low := float64(low)/10000.0
+				_match := float64(tradeprice)/10000.0
+				_turnover := amount/100
+				debug = false
+				if debug {
+					fmt.Printf("[code|%v] [time|%d] [preClose|%f]", _code, _time, _preClose)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] [match|%f]", _open, _high, _low, _match)
+					fmt.Printf(" [volume|%d] [turnover|%d]\n", volume, _turnover)
+				}
+				
+				marketData := base.Marketdata{Code:_code, Time:_time, PreClose:_preClose, Open:_open, High:_high, Low:_low, Match:_match, Volume:volume, Turnover:_turnover}
+				
+				data, err := msgpack.Marshal(&marketData)
+				if err != nil {
+				    panic(err)
+				}
+				
+				debug = false
+				if debug {
+					fmt.Printf("[data|%v]\n", data)
+					var mData base.Marketdata
+					err = msgpack.Unmarshal(data, &mData)
+					if err != nil {
+				    	panic(err)
+					}
+					fmt.Printf("Ummarshal:[code|%s] [time|%d] [preClose|%f]", mData.Code, mData.Time, mData.PreClose)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] match|%f]", mData.Open, mData.High, mData.Low, mData.Match)
+					fmt.Printf(" [volume|%d] [turnover|%d]\n", mData.Volume, mData.Turnover)
+				}
+				if count == 10 {
+					ct2 := time.Now().Sub(tt1)
+					fmt.Printf("%d %d %v\n", seq, count, ct2)
+				}
+				_data := make([]byte, len(data) + 1)
+				//上交所标志
+				_data[0] = 0x2
+				copy(_data[1:], data)
+				rb.Put(_data)
+				mysqlRb.Put(marketData)
+			}
+
+		}(i)
+	}
+}
+
+func md002map() {
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func(seq int) {
+			count := 0
+			fmt.Println("start ", seq)
+			tt1 := time.Now()
+			for {
+				count++
+				msg, _ := rbmd002map.Get()
+				b := msg.([]byte)
+				code := make([]byte, 6)
+				copy(code, b[0:6])
+				
+				var volume int64
+				volume = 0
+				for i := 0; i < 16; i++ {
+					if b[16+i] == 49 {
+						volume += powb(10, 15-i)
+					} else if b[16+i] == 50 {
+						volume += 2 * powb(10, 15-i)
+					} else if b[16+i] == 51 {
+						volume += 3 * powb(10, 15-i)
+					} else if b[16+i] == 52 {
+						volume += 4 * powb(10, 15-i)
+					} else if b[16+i] == 53 {
+						volume += 5 * powb(10, 15-i)
+					} else if b[16+i] == 54 {
+						volume += 6 * powb(10, 15-i)
+					} else if b[16+i] == 55 {
+						volume += 7 * powb(10, 15-i)
+					} else if b[16+i] == 56 {
+						volume += 8 * powb(10, 15-i)
+					} else if b[16+i] == 57 {
+						volume += 9 * powb(10, 15-i)
+					} else {
+					}
+				}
+
+				var amount int64
+				amount = 0
+				for i := 0; i < 16; i++ {
+					n := 0
+					if i == 13 {
+						continue
+					} else if i > 13 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[33+i] == 49 {
+						amount += powb(10, 14-n)
+					} else if b[33+i] == 50 {
+						amount += 2 * powb(10, 14-n)
+					} else if b[33+i] == 51 {
+						amount += 3 * powb(10, 14-n)
+					} else if b[33+i] == 52 {
+						amount += 4 * powb(10, 14-n)
+					} else if b[33+i] == 53 {
+						amount += 5 * powb(10, 14-n)
+					} else if b[33+i] == 54 {
+						amount += 6 * powb(10, 14-n)
+					} else if b[33+i] == 55 {
+						amount += 7 * powb(10, 14-n)
+					} else if b[33+i] == 56 {
+						amount += 8 * powb(10, 14-n)
+					} else if b[33+i] == 57 {
+						amount += 9 * powb(10, 14-n)
+					} else {
+					}
+				}
+
+				var lastprice int64
+				lastprice = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[50+i] == 49 {
+						lastprice += powb(10, 9-n)
+					} else if b[50+i] == 50 {
+						lastprice += 2 * powb(10, 9-n)
+					} else if b[50+i] == 51 {
+						lastprice += 3 * powb(10, 9-n)
+					} else if b[50+i] == 52 {
+						lastprice += 4 * powb(10, 9-n)
+					} else if b[50+i] == 53 {
+						lastprice += 5 * powb(10, 9-n)
+					} else if b[50+i] == 54 {
+						lastprice += 6 * powb(10, 9-n)
+					} else if b[50+i] == 55 {
+						lastprice += 7 * powb(10, 9-n)
+					} else if b[50+i] == 56 {
+						lastprice += 8 * powb(10, 9-n)
+					} else if b[50+i] == 57 {
+						lastprice += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var open int64
+				open = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[62+i] == 49 {
+						open += powb(10, 9-n)
+					} else if b[62+i] == 50 {
+						open += 2 * powb(10, 9-n)
+					} else if b[62+i] == 51 {
+						open += 3 * powb(10, 9-n)
+					} else if b[62+i] == 52 {
+						open += 4 * powb(10, 9-n)
+					} else if b[62+i] == 53 {
+						open += 5 * powb(10, 9-n)
+					} else if b[62+i] == 54 {
+						open += 6 * powb(10, 9-n)
+					} else if b[62+i] == 55 {
+						open += 7 * powb(10, 9-n)
+					} else if b[62+i] == 56 {
+						open += 8 * powb(10, 9-n)
+					} else if b[62+i] == 57 {
+						open += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var high int64
+				high = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[74+i] == 49 {
+						high += powb(10, 9-n)
+					} else if b[74+i] == 50 {
+						high += 2 * powb(10, 9-n)
+					} else if b[74+i] == 51 {
+						high += 3 * powb(10, 9-n)
+					} else if b[74+i] == 52 {
+						high += 4 * powb(10, 9-n)
+					} else if b[74+i] == 53 {
+						high += 5 * powb(10, 9-n)
+					} else if b[74+i] == 54 {
+						high += 6 * powb(10, 9-n)
+					} else if b[74+i] == 55 {
+						high += 7 * powb(10, 9-n)
+					} else if b[74+i] == 56 {
+						high += 8 * powb(10, 9-n)
+					} else if b[74+i] == 57 {
+						high += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var low int64
+				low = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[86+i] == 49 {
+						low += powb(10, 9-n)
+					} else if b[86+i] == 50 {
+						low += 2 * powb(10, 9-n)
+					} else if b[86+i] == 51 {
+						low += 3 * powb(10, 9-n)
+					} else if b[86+i] == 52 {
+						low += 4 * powb(10, 9-n)
+					} else if b[86+i] == 53 {
+						low += 5 * powb(10, 9-n)
+					} else if b[86+i] == 54 {
+						low += 6 * powb(10, 9-n)
+					} else if b[86+i] == 55 {
+						low += 7 * powb(10, 9-n)
+					} else if b[86+i] == 56 {
+						low += 8 * powb(10, 9-n)
+					} else if b[86+i] == 57 {
+						low += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var tradeprice int64
+				tradeprice = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[98+i] == 49 {
+						tradeprice += powb(10, 9-n)
+					} else if b[98+i] == 50 {
+						tradeprice += 2 * powb(10, 9-n)
+					} else if b[98+i] == 51 {
+						tradeprice += 3 * powb(10, 9-n)
+					} else if b[98+i] == 52 {
+						tradeprice += 4 * powb(10, 9-n)
+					} else if b[98+i] == 53 {
+						tradeprice += 5 * powb(10, 9-n)
+					} else if b[98+i] == 54 {
+						tradeprice += 6 * powb(10, 9-n)
+					} else if b[98+i] == 55 {
+						tradeprice += 7 * powb(10, 9-n)
+					} else if b[98+i] == 56 {
+						tradeprice += 8 * powb(10, 9-n)
+					} else if b[98+i] == 57 {
+						tradeprice += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var closepx int64
+				closepx = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[110+i] == 49 {
+						closepx += powb(10, 9-n)
+					} else if b[110+i] == 50 {
+						closepx += 2 * powb(10, 9-n)
+					} else if b[110+i] == 51 {
+						closepx += 3 * powb(10, 9-n)
+					} else if b[110+i] == 52 {
+						closepx += 4 * powb(10, 9-n)
+					} else if b[110+i] == 53 {
+						closepx += 5 * powb(10, 9-n)
+					} else if b[110+i] == 54 {
+						closepx += 6 * powb(10, 9-n)
+					} else if b[110+i] == 55 {
+						closepx += 7 * powb(10, 9-n)
+					} else if b[110+i] == 56 {
+						closepx += 8 * powb(10, 9-n)
+					} else if b[110+i] == 57 {
+						closepx += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bp1 int64
+				bp1 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[122+i] == 49 {
+						bp1 += powb(10, 9-n)
+					} else if b[122+i] == 50 {
+						bp1 += 2 * powb(10, 9-n)
+					} else if b[122+i] == 51 {
+						bp1 += 3 * powb(10, 9-n)
+					} else if b[122+i] == 52 {
+						bp1 += 4 * powb(10, 9-n)
+					} else if b[122+i] == 53 {
+						bp1 += 5 * powb(10, 9-n)
+					} else if b[122+i] == 54 {
+						bp1 += 6 * powb(10, 9-n)
+					} else if b[122+i] == 55 {
+						bp1 += 7 * powb(10, 9-n)
+					} else if b[122+i] == 56 {
+						bp1 += 8 * powb(10, 9-n)
+					} else if b[122+i] == 57 {
+						bp1 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv1 int64
+				bv1 = 0
+				for i := 0; i < 12; i++ {
+					if b[134+i] == 49 {
+						bv1 += powb(10, 11-i)
+					} else if b[134+i] == 50 {
+						bv1 += 2 * powb(10, 11-i)
+					} else if b[134+i] == 51 {
+						bv1 += 3 * powb(10, 11-i)
+					} else if b[134+i] == 52 {
+						bv1 += 4 * powb(10, 11-i)
+					} else if b[134+i] == 53 {
+						bv1 += 5 * powb(10, 11-i)
+					} else if b[134+i] == 54 {
+						bv1 += 6 * powb(10, 11-i)
+					} else if b[134+i] == 55 {
+						bv1 += 7 * powb(10, 11-i)
+					} else if b[134+i] == 56 {
+						bv1 += 8 * powb(10, 11-i)
+					} else if b[134+i] == 57 {
+						bv1 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp1 int64
+				sp1 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[147+i] == 49 {
+						sp1 += powb(10, 9-n)
+					} else if b[147+i] == 50 {
+						sp1 += 2 * powb(10, 9-n)
+					} else if b[147+i] == 51 {
+						sp1 += 3 * powb(10, 9-n)
+					} else if b[147+i] == 52 {
+						sp1 += 4 * powb(10, 9-n)
+					} else if b[147+i] == 53 {
+						sp1 += 5 * powb(10, 9-n)
+					} else if b[147+i] == 54 {
+						sp1 += 6 * powb(10, 9-n)
+					} else if b[147+i] == 55 {
+						sp1 += 7 * powb(10, 9-n)
+					} else if b[147+i] == 56 {
+						sp1 += 8 * powb(10, 9-n)
+					} else if b[147+i] == 57 {
+						sp1 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv1 int64
+				sv1 = 0
+				for i := 0; i < 12; i++ {
+					if b[159+i] == 49 {
+						sv1 += powb(10, 11-i)
+					} else if b[159+i] == 50 {
+						sv1 += 2 * powb(10, 11-i)
+					} else if b[159+i] == 51 {
+						sv1 += 3 * powb(10, 11-i)
+					} else if b[159+i] == 52 {
+						sv1 += 4 * powb(10, 11-i)
+					} else if b[159+i] == 53 {
+						sv1 += 5 * powb(10, 11-i)
+					} else if b[159+i] == 54 {
+						sv1 += 6 * powb(10, 11-i)
+					} else if b[159+i] == 55 {
+						sv1 += 7 * powb(10, 11-i)
+					} else if b[159+i] == 56 {
+						sv1 += 8 * powb(10, 11-i)
+					} else if b[159+i] == 57 {
+						sv1 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var bp2 int64
+				bp2 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[172+i] == 49 {
+						bp2 += powb(10, 9-n)
+					} else if b[172+i] == 50 {
+						bp2 += 2 * powb(10, 9-n)
+					} else if b[172+i] == 51 {
+						bp2 += 3 * powb(10, 9-n)
+					} else if b[172+i] == 52 {
+						bp2 += 4 * powb(10, 9-n)
+					} else if b[172+i] == 53 {
+						bp2 += 5 * powb(10, 9-n)
+					} else if b[172+i] == 54 {
+						bp2 += 6 * powb(10, 9-n)
+					} else if b[172+i] == 55 {
+						bp2 += 7 * powb(10, 9-n)
+					} else if b[172+i] == 56 {
+						bp2 += 8 * powb(10, 9-n)
+					} else if b[172+i] == 57 {
+						bp2 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv2 int64
+				bv2 = 0
+				for i := 0; i < 12; i++ {
+					if b[184+i] == 49 {
+						bv2 += powb(10, 11-i)
+					} else if b[184+i] == 50 {
+						bv2 += 2 * powb(10, 11-i)
+					} else if b[184+i] == 51 {
+						bv2 += 3 * powb(10, 11-i)
+					} else if b[184+i] == 52 {
+						bv2 += 4 * powb(10, 11-i)
+					} else if b[184+i] == 53 {
+						bv2 += 5 * powb(10, 11-i)
+					} else if b[184+i] == 54 {
+						bv2 += 6 * powb(10, 11-i)
+					} else if b[184+i] == 55 {
+						bv2 += 7 * powb(10, 11-i)
+					} else if b[184+i] == 56 {
+						bv2 += 8 * powb(10, 11-i)
+					} else if b[184+i] == 57 {
+						bv2 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp2 int64
+				sp2 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[197+i] == 49 {
+						sp2 += powb(10, 9-n)
+					} else if b[197+i] == 50 {
+						sp2 += 2 * powb(10, 9-n)
+					} else if b[197+i] == 51 {
+						sp2 += 3 * powb(10, 9-n)
+					} else if b[197+i] == 52 {
+						sp2 += 4 * powb(10, 9-n)
+					} else if b[197+i] == 53 {
+						sp2 += 5 * powb(10, 9-n)
+					} else if b[197+i] == 54 {
+						sp2 += 6 * powb(10, 9-n)
+					} else if b[197+i] == 55 {
+						sp2 += 7 * powb(10, 9-n)
+					} else if b[197+i] == 56 {
+						sp2 += 8 * powb(10, 9-n)
+					} else if b[197+i] == 57 {
+						sp2 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv2 int64
+				sv2 = 0
+				for i := 0; i < 12; i++ {
+					if b[209+i] == 49 {
+						sv2 += powb(10, 11-i)
+					} else if b[209+i] == 50 {
+						sv2 += 2 * powb(10, 11-i)
+					} else if b[209+i] == 51 {
+						sv2 += 3 * powb(10, 11-i)
+					} else if b[209+i] == 52 {
+						sv2 += 4 * powb(10, 11-i)
+					} else if b[209+i] == 53 {
+						sv2 += 5 * powb(10, 11-i)
+					} else if b[209+i] == 54 {
+						sv2 += 6 * powb(10, 11-i)
+					} else if b[209+i] == 55 {
+						sv2 += 7 * powb(10, 11-i)
+					} else if b[209+i] == 56 {
+						sv2 += 8 * powb(10, 11-i)
+					} else if b[209+i] == 57 {
+						sv2 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var bp3 int64
+				bp3 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[222+i] == 49 {
+						bp3 += powb(10, 9-n)
+					} else if b[222+i] == 50 {
+						bp3 += 2 * powb(10, 9-n)
+					} else if b[222+i] == 51 {
+						bp3 += 3 * powb(10, 9-n)
+					} else if b[222+i] == 52 {
+						bp3 += 4 * powb(10, 9-n)
+					} else if b[222+i] == 53 {
+						bp3 += 5 * powb(10, 9-n)
+					} else if b[222+i] == 54 {
+						bp3 += 6 * powb(10, 9-n)
+					} else if b[222+i] == 55 {
+						bp3 += 7 * powb(10, 9-n)
+					} else if b[222+i] == 56 {
+						bp3 += 8 * powb(10, 9-n)
+					} else if b[222+i] == 57 {
+						bp3 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv3 int64
+				bv3 = 0
+				for i := 0; i < 12; i++ {
+					if b[234+i] == 49 {
+						bv3 += powb(10, 11-i)
+					} else if b[234+i] == 50 {
+						bv3 += 2 * powb(10, 11-i)
+					} else if b[234+i] == 51 {
+						bv3 += 3 * powb(10, 11-i)
+					} else if b[234+i] == 52 {
+						bv3 += 4 * powb(10, 11-i)
+					} else if b[234+i] == 53 {
+						bv3 += 5 * powb(10, 11-i)
+					} else if b[234+i] == 54 {
+						bv3 += 6 * powb(10, 11-i)
+					} else if b[234+i] == 55 {
+						bv3 += 7 * powb(10, 11-i)
+					} else if b[234+i] == 56 {
+						bv3 += 8 * powb(10, 11-i)
+					} else if b[234+i] == 57 {
+						bv3 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp3 int64
+				sp3 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[247+i] == 49 {
+						sp3 += powb(10, 9-n)
+					} else if b[247+i] == 50 {
+						sp3 += 2 * powb(10, 9-n)
+					} else if b[247+i] == 51 {
+						sp3 += 3 * powb(10, 9-n)
+					} else if b[247+i] == 52 {
+						sp3 += 4 * powb(10, 9-n)
+					} else if b[247+i] == 53 {
+						sp3 += 5 * powb(10, 9-n)
+					} else if b[247+i] == 54 {
+						sp3 += 6 * powb(10, 9-n)
+					} else if b[247+i] == 55 {
+						sp3 += 7 * powb(10, 9-n)
+					} else if b[247+i] == 56 {
+						sp3 += 8 * powb(10, 9-n)
+					} else if b[247+i] == 57 {
+						sp3 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv3 int64
+				sv3 = 0
+				for i := 0; i < 12; i++ {
+					if b[259+i] == 49 {
+						sv3 += powb(10, 11-i)
+					} else if b[259+i] == 50 {
+						sv3 += 2 * powb(10, 11-i)
+					} else if b[259+i] == 51 {
+						sv3 += 3 * powb(10, 11-i)
+					} else if b[259+i] == 52 {
+						sv3 += 4 * powb(10, 11-i)
+					} else if b[259+i] == 53 {
+						sv3 += 5 * powb(10, 11-i)
+					} else if b[259+i] == 54 {
+						sv3 += 6 * powb(10, 11-i)
+					} else if b[259+i] == 55 {
+						sv3 += 7 * powb(10, 11-i)
+					} else if b[259+i] == 56 {
+						sv3 += 8 * powb(10, 11-i)
+					} else if b[259+i] == 57 {
+						sv3 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var bp4 int64
+				bp4 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[272+i] == 49 {
+						bp4 += powb(10, 9-n)
+					} else if b[272+i] == 50 {
+						bp4 += 2 * powb(10, 9-n)
+					} else if b[272+i] == 51 {
+						bp4 += 3 * powb(10, 9-n)
+					} else if b[272+i] == 52 {
+						bp4 += 4 * powb(10, 9-n)
+					} else if b[272+i] == 53 {
+						bp4 += 5 * powb(10, 9-n)
+					} else if b[272+i] == 54 {
+						bp4 += 6 * powb(10, 9-n)
+					} else if b[272+i] == 55 {
+						bp4 += 7 * powb(10, 9-n)
+					} else if b[272+i] == 56 {
+						bp4 += 8 * powb(10, 9-n)
+					} else if b[272+i] == 57 {
+						bp4 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv4 int64
+				bv4 = 0
+				for i := 0; i < 12; i++ {
+					if b[284+i] == 49 {
+						bv4 += powb(10, 11-i)
+					} else if b[284+i] == 50 {
+						bv4 += 2 * powb(10, 11-i)
+					} else if b[284+i] == 51 {
+						bv4 += 3 * powb(10, 11-i)
+					} else if b[284+i] == 52 {
+						bv4 += 4 * powb(10, 11-i)
+					} else if b[284+i] == 53 {
+						bv4 += 5 * powb(10, 11-i)
+					} else if b[284+i] == 54 {
+						bv4 += 6 * powb(10, 11-i)
+					} else if b[284+i] == 55 {
+						bv4 += 7 * powb(10, 11-i)
+					} else if b[284+i] == 56 {
+						bv4 += 8 * powb(10, 11-i)
+					} else if b[284+i] == 57 {
+						bv4 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp4 int64
+				sp4 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[297+i] == 49 {
+						sp4 += powb(10, 9-n)
+					} else if b[297+i] == 50 {
+						sp4 += 2 * powb(10, 9-n)
+					} else if b[297+i] == 51 {
+						sp4 += 3 * powb(10, 9-n)
+					} else if b[297+i] == 52 {
+						sp4 += 4 * powb(10, 9-n)
+					} else if b[297+i] == 53 {
+						sp4 += 5 * powb(10, 9-n)
+					} else if b[297+i] == 54 {
+						sp4 += 6 * powb(10, 9-n)
+					} else if b[297+i] == 55 {
+						sp4 += 7 * powb(10, 9-n)
+					} else if b[297+i] == 56 {
+						sp4 += 8 * powb(10, 9-n)
+					} else if b[297+i] == 57 {
+						sp4 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv4 int64
+				sv4 = 0
+				for i := 0; i < 12; i++ {
+					if b[309+i] == 49 {
+						sv4 += powb(10, 11-i)
+					} else if b[309+i] == 50 {
+						sv4 += 2 * powb(10, 11-i)
+					} else if b[309+i] == 51 {
+						sv4 += 3 * powb(10, 11-i)
+					} else if b[309+i] == 52 {
+						sv4 += 4 * powb(10, 11-i)
+					} else if b[309+i] == 53 {
+						sv4 += 5 * powb(10, 11-i)
+					} else if b[309+i] == 54 {
+						sv4 += 6 * powb(10, 11-i)
+					} else if b[309+i] == 55 {
+						sv4 += 7 * powb(10, 11-i)
+					} else if b[309+i] == 56 {
+						sv4 += 8 * powb(10, 11-i)
+					} else if b[309+i] == 57 {
+						sv4 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+				var bp5 int64
+				bp5 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[322+i] == 49 {
+						bp5 += powb(10, 9-n)
+					} else if b[322+i] == 50 {
+						bp5 += 2 * powb(10, 9-n)
+					} else if b[322+i] == 51 {
+						bp5 += 3 * powb(10, 9-n)
+					} else if b[322+i] == 52 {
+						bp5 += 4 * powb(10, 9-n)
+					} else if b[322+i] == 53 {
+						bp5 += 5 * powb(10, 9-n)
+					} else if b[322+i] == 54 {
+						bp5 += 6 * powb(10, 9-n)
+					} else if b[322+i] == 55 {
+						bp5 += 7 * powb(10, 9-n)
+					} else if b[322+i] == 56 {
+						bp5 += 8 * powb(10, 9-n)
+					} else if b[322+i] == 57 {
+						bp5 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv5 int64
+				bv5 = 0
+				for i := 0; i < 12; i++ {
+					if b[334+i] == 49 {
+						bv5 += powb(10, 11-i)
+					} else if b[334+i] == 50 {
+						bv5 += 2 * powb(10, 11-i)
+					} else if b[334+i] == 51 {
+						bv5 += 3 * powb(10, 11-i)
+					} else if b[334+i] == 52 {
+						bv5 += 4 * powb(10, 11-i)
+					} else if b[334+i] == 53 {
+						bv5 += 5 * powb(10, 11-i)
+					} else if b[334+i] == 54 {
+						bv5 += 6 * powb(10, 11-i)
+					} else if b[334+i] == 55 {
+						bv5 += 7 * powb(10, 11-i)
+					} else if b[334+i] == 56 {
+						bv5 += 8 * powb(10, 11-i)
+					} else if b[334+i] == 57 {
+						bv5 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp5 int64
+				sp5 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[347+i] == 49 {
+						sp5 += powb(10, 9-n)
+					} else if b[347+i] == 50 {
+						sp5 += 2 * powb(10, 9-n)
+					} else if b[347+i] == 51 {
+						sp5 += 3 * powb(10, 9-n)
+					} else if b[347+i] == 52 {
+						sp5 += 4 * powb(10, 9-n)
+					} else if b[347+i] == 53 {
+						sp5 += 5 * powb(10, 9-n)
+					} else if b[347+i] == 54 {
+						sp5 += 6 * powb(10, 9-n)
+					} else if b[347+i] == 55 {
+						sp5 += 7 * powb(10, 9-n)
+					} else if b[347+i] == 56 {
+						sp5 += 8 * powb(10, 9-n)
+					} else if b[347+i] == 57 {
+						sp5 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv5 int64
+				sv5 = 0
+				for i := 0; i < 12; i++ {
+					if b[359+i] == 49 {
+						sv5 += powb(10, 11-i)
+					} else if b[359+i] == 50 {
+						sv5 += 2 * powb(10, 11-i)
+					} else if b[359+i] == 51 {
+						sv5 += 3 * powb(10, 11-i)
+					} else if b[359+i] == 52 {
+						sv5 += 4 * powb(10, 11-i)
+					} else if b[359+i] == 53 {
+						sv5 += 5 * powb(10, 11-i)
+					} else if b[359+i] == 54 {
+						sv5 += 6 * powb(10, 11-i)
+					} else if b[359+i] == 55 {
+						sv5 += 7 * powb(10, 11-i)
+					} else if b[359+i] == 56 {
+						sv5 += 8 * powb(10, 11-i)
+					} else if b[359+i] == 57 {
+						sv5 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				status1 := b[372]
+
+				var status2 int64
+				status2 = 0
+				for i := 0; i < 3; i++ {
+					if b[373+i] == 49 {
+						status2 += powb(10, 2-i)
+					} else {
+					}
+				}
+				timestamp := make([]byte, 9)
+				//copy(timestamp, b[381:393])
+				copy(timestamp[0:2], b[381:383])
+				copy(timestamp[2:4], b[384:386])
+				copy(timestamp[4:6], b[387:389])
+				copy(timestamp[6:9], b[390:393])
+
+				debug := false
+				if debug {
+					fmt.Printf("\n---[code|%v] [volume|%d] [amount|%d] [lastprice|%d]", code, volume, amount, lastprice)
+					fmt.Printf(" [open|%d] [high|%d] [low|%d] [tradeprice|%d] [closepx|%d]", open, high, low, tradeprice, closepx)
+					fmt.Printf(" [bp1|%d] [bv1|%d] [sp1|%d] [sv1|%d]", bp1, bv1, sp1, sv1)
+					fmt.Printf(" [bp2|%d] [bv2|%d] [sp2|%d] [sv2|%d]", bp2, bv2, sp2, sv2)
+					fmt.Printf(" [bp3|%d] [bv3|%d] [sp3|%d] [sv3|%d]", bp3, bv3, sp3, sv3)
+					fmt.Printf(" [bp4|%d] [bv4|%d] [sp4|%d] [sv4|%d]", bp4, bv4, sp4, sv4)
+					fmt.Printf(" [bp5|%d] [bv5|%d] [sp5|%d] [sv5|%d]", bp5, bv5, sp5, sv5)
+					fmt.Printf(" [status1|%v] [status2|%d]", status1, status2)
+					fmt.Printf(" [timestamp|%v]", timestamp)
+					fmt.Printf("---\n")
+				}
+				//msgpack序列化
+				_code := string(code) + ".SH"
+				
+				timestamp_buf, err := strconv.ParseInt(string(timestamp), 10, 32)
+				if err != nil {
+					log.Error("string to int32 err: ", err)
+				}
+				_time := int32(timestamp_buf)
+				
+				var _status string
+				if status1 == 0x43 {//C => I
+					_status = "I"
+				}else if status1 == 0x54 {//T => O
+					_status = "O"
+				}else if status1 == 0x50 {//P => B
+					_status = "B"
+				}
+				
+				_preClose := float64(lastprice)/1000.00
+				_open := float64(open)/1000.00
+				_high := float64(high)/1000.00
+				_low := float64(low)/1000.00
+				_match := float64(tradeprice)/1000.00
+				var _askPrice = [10]float64{float64(sp1)/1000.0, float64(sp2)/1000.0, float64(sp3)/1000.0, float64(sp4)/1000.0, float64(sp5)/1000.0}
+				var _askVol = [10]int32{int32(sv1), int32(sv2), int32(sv3), int32(sv4), int32(sv5)}
+				var _bidPrice = [10]float64{float64(bp1)/1000.0, float64(bp2)/1000.0, float64(bp3)/1000.0, float64(bp4)/1000.0, float64(bp5)/1000.0}
+				var _bidVol = [10]int32{int32(bv1), int32(bv2), int32(bv3), int32(bv4), int32(bv5)}
+				_turnover := amount/100				
+				
+				debug = false
+				if debug {
+					fmt.Printf("[code|%s] [time|%d] [status|%s] [preClose|%f]", _code, _time, _status, _preClose)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] [match|%f]", _open, _high, _low, _match)
+					fmt.Printf(" [askPrice|%v] [askVol|%v] [bidPrice|%v] [bidVol|%v]", _askPrice, _askVol, _bidPrice, _bidVol)
+					fmt.Printf(" [volume|%d] [turnover|%d]\n", volume, _turnover)
+				}
+				
+				marketData := base.Marketdata{Code:_code, Time:_time, Status:_status, PreClose:_preClose, Open:_open, High:_high, Low:_low, Match:_match, AskPrice:_askPrice, AskVol:_askVol, BidPrice:_bidPrice, BidVol:_bidVol, Volume:volume, Turnover:_turnover}
+				
+				data, err := msgpack.Marshal(&marketData)
+				if err != nil {
+				    panic(err)
+				}
+				
+				debug = false
+				if debug {
+					fmt.Printf("data|%v\n", data)
+					var mData base.Marketdata
+					err = msgpack.Unmarshal(data, &mData)
+					if err != nil {
+				    	panic(err)
+					}
+					fmt.Printf("Ummarshal:[code|%v] [time|%d] [status|%v] [preClose|%f]", mData.Code, mData.Time, mData.Status, mData.PreClose)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] [match|%f]", mData.Open, mData.High, mData.Low, mData.Match)
+					fmt.Printf(" [askPrice|%v] [askVol|%v] [bidPrice|%v] [bidVol|%v]", mData.AskPrice, mData.AskVol, mData.BidPrice, mData.BidVol)
+					fmt.Printf(" [volume|%d] [turnover|%d]\n", mData.Volume, mData.Turnover)
+				}
+				if count == 10 {
+					ct2 := time.Now().Sub(tt1)
+					fmt.Printf("%d %d %v\n", seq, count, ct2)
+				}
+				_data := make([]byte, len(data) + 1)
+				//上交所标志
+				_data[0] = 0x2
+				copy(_data[1:], data)
+				rb.Put(_data)
+				mysqlRb.Put(marketData)
+			}
+
+		}(i)
+	}
+
+}
+
+func md004map() {
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func(seq int) {
+			count := 0
+			fmt.Println("start ", seq)
+			tt1 := time.Now()
+			for {
+				count++
+				msg, _ := rbmd004map.Get()
+				b := msg.([]byte)
+				code := make([]byte, 6)
+				copy(code, b[0:6])
+				
+				var volume int64
+				volume = 0
+				for i := 0; i < 16; i++ {
+					if b[16+i] == 49 {
+						volume += powb(10, 15-i)
+					} else if b[16+i] == 50 {
+						volume += 2 * powb(10, 15-i)
+					} else if b[16+i] == 51 {
+						volume += 3 * powb(10, 15-i)
+					} else if b[16+i] == 52 {
+						volume += 4 * powb(10, 15-i)
+					} else if b[16+i] == 53 {
+						volume += 5 * powb(10, 15-i)
+					} else if b[16+i] == 54 {
+						volume += 6 * powb(10, 15-i)
+					} else if b[16+i] == 55 {
+						volume += 7 * powb(10, 15-i)
+					} else if b[16+i] == 56 {
+						volume += 8 * powb(10, 15-i)
+					} else if b[16+i] == 57 {
+						volume += 9 * powb(10, 15-i)
+					} else {
+					}
+				}
+				var amount int64
+				amount = 0
+				for i := 0; i < 16; i++ {
+					n := 0
+					if i == 13 {
+						continue
+					} else if i > 13 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[33+i] == 49 {
+						amount += powb(10, 14-n)
+					} else if b[33+i] == 50 {
+						amount += 2 * powb(10, 14-n)
+					} else if b[33+i] == 51 {
+						amount += 3 * powb(10, 14-n)
+					} else if b[33+i] == 52 {
+						amount += 4 * powb(10, 14-n)
+					} else if b[33+i] == 53 {
+						amount += 5 * powb(10, 14-n)
+					} else if b[33+i] == 54 {
+						amount += 6 * powb(10, 14-n)
+					} else if b[33+i] == 55 {
+						amount += 7 * powb(10, 14-n)
+					} else if b[33+i] == 56 {
+						amount += 8 * powb(10, 14-n)
+					} else if b[33+i] == 57 {
+						amount += 9 * powb(10, 14-n)
+					} else {
+					}
+				}
+
+				var lastprice int64
+				lastprice = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[50+i] == 49 {
+						lastprice += powb(10, 9-n)
+					} else if b[50+i] == 50 {
+						lastprice += 2 * powb(10, 9-n)
+					} else if b[50+i] == 51 {
+						lastprice += 3 * powb(10, 9-n)
+					} else if b[50+i] == 52 {
+						lastprice += 4 * powb(10, 9-n)
+					} else if b[50+i] == 53 {
+						lastprice += 5 * powb(10, 9-n)
+					} else if b[50+i] == 54 {
+						lastprice += 6 * powb(10, 9-n)
+					} else if b[50+i] == 55 {
+						lastprice += 7 * powb(10, 9-n)
+					} else if b[50+i] == 56 {
+						lastprice += 8 * powb(10, 9-n)
+					} else if b[50+i] == 57 {
+						lastprice += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var open int64
+				open = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[62+i] == 49 {
+						open += powb(10, 9-n)
+					} else if b[62+i] == 50 {
+						open += 2 * powb(10, 9-n)
+					} else if b[62+i] == 51 {
+						open += 3 * powb(10, 9-n)
+					} else if b[62+i] == 52 {
+						open += 4 * powb(10, 9-n)
+					} else if b[62+i] == 53 {
+						open += 5 * powb(10, 9-n)
+					} else if b[62+i] == 54 {
+						open += 6 * powb(10, 9-n)
+					} else if b[62+i] == 55 {
+						open += 7 * powb(10, 9-n)
+					} else if b[62+i] == 56 {
+						open += 8 * powb(10, 9-n)
+					} else if b[62+i] == 57 {
+						open += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var high int64
+				high = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[74+i] == 49 {
+						high += powb(10, 9-n)
+					} else if b[74+i] == 50 {
+						high += 2 * powb(10, 9-n)
+					} else if b[74+i] == 51 {
+						high += 3 * powb(10, 9-n)
+					} else if b[74+i] == 52 {
+						high += 4 * powb(10, 9-n)
+					} else if b[74+i] == 53 {
+						high += 5 * powb(10, 9-n)
+					} else if b[74+i] == 54 {
+						high += 6 * powb(10, 9-n)
+					} else if b[74+i] == 55 {
+						high += 7 * powb(10, 9-n)
+					} else if b[74+i] == 56 {
+						high += 8 * powb(10, 9-n)
+					} else if b[74+i] == 57 {
+						high += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var low int64
+				low = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[86+i] == 49 {
+						low += powb(10, 9-n)
+					} else if b[86+i] == 50 {
+						low += 2 * powb(10, 9-n)
+					} else if b[86+i] == 51 {
+						low += 3 * powb(10, 9-n)
+					} else if b[86+i] == 52 {
+						low += 4 * powb(10, 9-n)
+					} else if b[86+i] == 53 {
+						low += 5 * powb(10, 9-n)
+					} else if b[86+i] == 54 {
+						low += 6 * powb(10, 9-n)
+					} else if b[86+i] == 55 {
+						low += 7 * powb(10, 9-n)
+					} else if b[86+i] == 56 {
+						low += 8 * powb(10, 9-n)
+					} else if b[86+i] == 57 {
+						low += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var tradeprice int64
+				tradeprice = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[98+i] == 49 {
+						tradeprice += powb(10, 9-n)
+					} else if b[98+i] == 50 {
+						tradeprice += 2 * powb(10, 9-n)
+					} else if b[98+i] == 51 {
+						tradeprice += 3 * powb(10, 9-n)
+					} else if b[98+i] == 52 {
+						tradeprice += 4 * powb(10, 9-n)
+					} else if b[98+i] == 53 {
+						tradeprice += 5 * powb(10, 9-n)
+					} else if b[98+i] == 54 {
+						tradeprice += 6 * powb(10, 9-n)
+					} else if b[98+i] == 55 {
+						tradeprice += 7 * powb(10, 9-n)
+					} else if b[98+i] == 56 {
+						tradeprice += 8 * powb(10, 9-n)
+					} else if b[98+i] == 57 {
+						tradeprice += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var closepx int64
+				closepx = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[110+i] == 49 {
+						closepx += powb(10, 9-n)
+					} else if b[110+i] == 50 {
+						closepx += 2 * powb(10, 9-n)
+					} else if b[110+i] == 51 {
+						closepx += 3 * powb(10, 9-n)
+					} else if b[110+i] == 52 {
+						closepx += 4 * powb(10, 9-n)
+					} else if b[110+i] == 53 {
+						closepx += 5 * powb(10, 9-n)
+					} else if b[110+i] == 54 {
+						closepx += 6 * powb(10, 9-n)
+					} else if b[110+i] == 55 {
+						closepx += 7 * powb(10, 9-n)
+					} else if b[110+i] == 56 {
+						closepx += 8 * powb(10, 9-n)
+					} else if b[110+i] == 57 {
+						closepx += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bp1 int64
+				bp1 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[122+i] == 49 {
+						bp1 += powb(10, 9-n)
+					} else if b[122+i] == 50 {
+						bp1 += 2 * powb(10, 9-n)
+					} else if b[122+i] == 51 {
+						bp1 += 3 * powb(10, 9-n)
+					} else if b[122+i] == 52 {
+						bp1 += 4 * powb(10, 9-n)
+					} else if b[122+i] == 53 {
+						bp1 += 5 * powb(10, 9-n)
+					} else if b[122+i] == 54 {
+						bp1 += 6 * powb(10, 9-n)
+					} else if b[122+i] == 55 {
+						bp1 += 7 * powb(10, 9-n)
+					} else if b[122+i] == 56 {
+						bp1 += 8 * powb(10, 9-n)
+					} else if b[122+i] == 57 {
+						bp1 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv1 int64
+				bv1 = 0
+				for i := 0; i < 12; i++ {
+					if b[134+i] == 49 {
+						bv1 += powb(10, 11-i)
+					} else if b[134+i] == 50 {
+						bv1 += 2 * powb(10, 11-i)
+					} else if b[134+i] == 51 {
+						bv1 += 3 * powb(10, 11-i)
+					} else if b[134+i] == 52 {
+						bv1 += 4 * powb(10, 11-i)
+					} else if b[134+i] == 53 {
+						bv1 += 5 * powb(10, 11-i)
+					} else if b[134+i] == 54 {
+						bv1 += 6 * powb(10, 11-i)
+					} else if b[134+i] == 55 {
+						bv1 += 7 * powb(10, 11-i)
+					} else if b[134+i] == 56 {
+						bv1 += 8 * powb(10, 11-i)
+					} else if b[134+i] == 57 {
+						bv1 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp1 int64
+				sp1 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[147+i] == 49 {
+						sp1 += powb(10, 9-n)
+					} else if b[147+i] == 50 {
+						sp1 += 2 * powb(10, 9-n)
+					} else if b[147+i] == 51 {
+						sp1 += 3 * powb(10, 9-n)
+					} else if b[147+i] == 52 {
+						sp1 += 4 * powb(10, 9-n)
+					} else if b[147+i] == 53 {
+						sp1 += 5 * powb(10, 9-n)
+					} else if b[147+i] == 54 {
+						sp1 += 6 * powb(10, 9-n)
+					} else if b[147+i] == 55 {
+						sp1 += 7 * powb(10, 9-n)
+					} else if b[147+i] == 56 {
+						sp1 += 8 * powb(10, 9-n)
+					} else if b[147+i] == 57 {
+						sp1 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv1 int64
+				sv1 = 0
+				for i := 0; i < 12; i++ {
+					if b[159+i] == 49 {
+						sv1 += powb(10, 11-i)
+					} else if b[159+i] == 50 {
+						sv1 += 2 * powb(10, 11-i)
+					} else if b[159+i] == 51 {
+						sv1 += 3 * powb(10, 11-i)
+					} else if b[159+i] == 52 {
+						sv1 += 4 * powb(10, 11-i)
+					} else if b[159+i] == 53 {
+						sv1 += 5 * powb(10, 11-i)
+					} else if b[159+i] == 54 {
+						sv1 += 6 * powb(10, 11-i)
+					} else if b[159+i] == 55 {
+						sv1 += 7 * powb(10, 11-i)
+					} else if b[159+i] == 56 {
+						sv1 += 8 * powb(10, 11-i)
+					} else if b[159+i] == 57 {
+						sv1 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var bp2 int64
+				bp2 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[172+i] == 49 {
+						bp2 += powb(10, 9-n)
+					} else if b[172+i] == 50 {
+						bp2 += 2 * powb(10, 9-n)
+					} else if b[172+i] == 51 {
+						bp2 += 3 * powb(10, 9-n)
+					} else if b[172+i] == 52 {
+						bp2 += 4 * powb(10, 9-n)
+					} else if b[172+i] == 53 {
+						bp2 += 5 * powb(10, 9-n)
+					} else if b[172+i] == 54 {
+						bp2 += 6 * powb(10, 9-n)
+					} else if b[172+i] == 55 {
+						bp2 += 7 * powb(10, 9-n)
+					} else if b[172+i] == 56 {
+						bp2 += 8 * powb(10, 9-n)
+					} else if b[172+i] == 57 {
+						bp2 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv2 int64
+				bv2 = 0
+				for i := 0; i < 12; i++ {
+					if b[184+i] == 49 {
+						bv2 += powb(10, 11-i)
+					} else if b[184+i] == 50 {
+						bv2 += 2 * powb(10, 11-i)
+					} else if b[184+i] == 51 {
+						bv2 += 3 * powb(10, 11-i)
+					} else if b[184+i] == 52 {
+						bv2 += 4 * powb(10, 11-i)
+					} else if b[184+i] == 53 {
+						bv2 += 5 * powb(10, 11-i)
+					} else if b[184+i] == 54 {
+						bv2 += 6 * powb(10, 11-i)
+					} else if b[184+i] == 55 {
+						bv2 += 7 * powb(10, 11-i)
+					} else if b[184+i] == 56 {
+						bv2 += 8 * powb(10, 11-i)
+					} else if b[184+i] == 57 {
+						bv2 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp2 int64
+				sp2 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[197+i] == 49 {
+						sp2 += powb(10, 9-n)
+					} else if b[197+i] == 50 {
+						sp2 += 2 * powb(10, 9-n)
+					} else if b[197+i] == 51 {
+						sp2 += 3 * powb(10, 9-n)
+					} else if b[197+i] == 52 {
+						sp2 += 4 * powb(10, 9-n)
+					} else if b[197+i] == 53 {
+						sp2 += 5 * powb(10, 9-n)
+					} else if b[197+i] == 54 {
+						sp2 += 6 * powb(10, 9-n)
+					} else if b[197+i] == 55 {
+						sp2 += 7 * powb(10, 9-n)
+					} else if b[197+i] == 56 {
+						sp2 += 8 * powb(10, 9-n)
+					} else if b[197+i] == 57 {
+						sp2 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv2 int64
+				sv2 = 0
+				for i := 0; i < 12; i++ {
+					if b[209+i] == 49 {
+						sv2 += powb(10, 11-i)
+					} else if b[209+i] == 50 {
+						sv2 += 2 * powb(10, 11-i)
+					} else if b[209+i] == 51 {
+						sv2 += 3 * powb(10, 11-i)
+					} else if b[209+i] == 52 {
+						sv2 += 4 * powb(10, 11-i)
+					} else if b[209+i] == 53 {
+						sv2 += 5 * powb(10, 11-i)
+					} else if b[209+i] == 54 {
+						sv2 += 6 * powb(10, 11-i)
+					} else if b[209+i] == 55 {
+						sv2 += 7 * powb(10, 11-i)
+					} else if b[209+i] == 56 {
+						sv2 += 8 * powb(10, 11-i)
+					} else if b[209+i] == 57 {
+						sv2 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var bp3 int64
+				bp3 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[222+i] == 49 {
+						bp3 += powb(10, 9-n)
+					} else if b[222+i] == 50 {
+						bp3 += 2 * powb(10, 9-n)
+					} else if b[222+i] == 51 {
+						bp3 += 3 * powb(10, 9-n)
+					} else if b[222+i] == 52 {
+						bp3 += 4 * powb(10, 9-n)
+					} else if b[222+i] == 53 {
+						bp3 += 5 * powb(10, 9-n)
+					} else if b[222+i] == 54 {
+						bp3 += 6 * powb(10, 9-n)
+					} else if b[222+i] == 55 {
+						bp3 += 7 * powb(10, 9-n)
+					} else if b[222+i] == 56 {
+						bp3 += 8 * powb(10, 9-n)
+					} else if b[222+i] == 57 {
+						bp3 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv3 int64
+				bv3 = 0
+				for i := 0; i < 12; i++ {
+					if b[234+i] == 49 {
+						bv3 += powb(10, 11-i)
+					} else if b[234+i] == 50 {
+						bv3 += 2 * powb(10, 11-i)
+					} else if b[234+i] == 51 {
+						bv3 += 3 * powb(10, 11-i)
+					} else if b[234+i] == 52 {
+						bv3 += 4 * powb(10, 11-i)
+					} else if b[234+i] == 53 {
+						bv3 += 5 * powb(10, 11-i)
+					} else if b[234+i] == 54 {
+						bv3 += 6 * powb(10, 11-i)
+					} else if b[234+i] == 55 {
+						bv3 += 7 * powb(10, 11-i)
+					} else if b[234+i] == 56 {
+						bv3 += 8 * powb(10, 11-i)
+					} else if b[234+i] == 57 {
+						bv3 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp3 int64
+				sp3 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[247+i] == 49 {
+						sp3 += powb(10, 9-n)
+					} else if b[247+i] == 50 {
+						sp3 += 2 * powb(10, 9-n)
+					} else if b[247+i] == 51 {
+						sp3 += 3 * powb(10, 9-n)
+					} else if b[247+i] == 52 {
+						sp3 += 4 * powb(10, 9-n)
+					} else if b[247+i] == 53 {
+						sp3 += 5 * powb(10, 9-n)
+					} else if b[247+i] == 54 {
+						sp3 += 6 * powb(10, 9-n)
+					} else if b[247+i] == 55 {
+						sp3 += 7 * powb(10, 9-n)
+					} else if b[247+i] == 56 {
+						sp3 += 8 * powb(10, 9-n)
+					} else if b[247+i] == 57 {
+						sp3 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv3 int64
+				sv3 = 0
+				for i := 0; i < 12; i++ {
+					if b[259+i] == 49 {
+						sv3 += powb(10, 11-i)
+					} else if b[259+i] == 50 {
+						sv3 += 2 * powb(10, 11-i)
+					} else if b[259+i] == 51 {
+						sv3 += 3 * powb(10, 11-i)
+					} else if b[259+i] == 52 {
+						sv3 += 4 * powb(10, 11-i)
+					} else if b[259+i] == 53 {
+						sv3 += 5 * powb(10, 11-i)
+					} else if b[259+i] == 54 {
+						sv3 += 6 * powb(10, 11-i)
+					} else if b[259+i] == 55 {
+						sv3 += 7 * powb(10, 11-i)
+					} else if b[259+i] == 56 {
+						sv3 += 8 * powb(10, 11-i)
+					} else if b[259+i] == 57 {
+						sv3 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var bp4 int64
+				bp4 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[272+i] == 49 {
+						bp4 += powb(10, 9-n)
+					} else if b[272+i] == 50 {
+						bp4 += 2 * powb(10, 9-n)
+					} else if b[272+i] == 51 {
+						bp4 += 3 * powb(10, 9-n)
+					} else if b[272+i] == 52 {
+						bp4 += 4 * powb(10, 9-n)
+					} else if b[272+i] == 53 {
+						bp4 += 5 * powb(10, 9-n)
+					} else if b[272+i] == 54 {
+						bp4 += 6 * powb(10, 9-n)
+					} else if b[272+i] == 55 {
+						bp4 += 7 * powb(10, 9-n)
+					} else if b[272+i] == 56 {
+						bp4 += 8 * powb(10, 9-n)
+					} else if b[272+i] == 57 {
+						bp4 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv4 int64
+				bv4 = 0
+				for i := 0; i < 12; i++ {
+					if b[284+i] == 49 {
+						bv4 += powb(10, 11-i)
+					} else if b[284+i] == 50 {
+						bv4 += 2 * powb(10, 11-i)
+					} else if b[284+i] == 51 {
+						bv4 += 3 * powb(10, 11-i)
+					} else if b[284+i] == 52 {
+						bv4 += 4 * powb(10, 11-i)
+					} else if b[284+i] == 53 {
+						bv4 += 5 * powb(10, 11-i)
+					} else if b[284+i] == 54 {
+						bv4 += 6 * powb(10, 11-i)
+					} else if b[284+i] == 55 {
+						bv4 += 7 * powb(10, 11-i)
+					} else if b[284+i] == 56 {
+						bv4 += 8 * powb(10, 11-i)
+					} else if b[284+i] == 57 {
+						bv4 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp4 int64
+				sp4 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[297+i] == 49 {
+						sp4 += powb(10, 9-n)
+					} else if b[297+i] == 50 {
+						sp4 += 2 * powb(10, 9-n)
+					} else if b[297+i] == 51 {
+						sp4 += 3 * powb(10, 9-n)
+					} else if b[297+i] == 52 {
+						sp4 += 4 * powb(10, 9-n)
+					} else if b[297+i] == 53 {
+						sp4 += 5 * powb(10, 9-n)
+					} else if b[297+i] == 54 {
+						sp4 += 6 * powb(10, 9-n)
+					} else if b[297+i] == 55 {
+						sp4 += 7 * powb(10, 9-n)
+					} else if b[297+i] == 56 {
+						sp4 += 8 * powb(10, 9-n)
+					} else if b[297+i] == 57 {
+						sp4 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv4 int64
+				sv4 = 0
+				for i := 0; i < 12; i++ {
+					if b[309+i] == 49 {
+						sv4 += powb(10, 11-i)
+					} else if b[309+i] == 50 {
+						sv4 += 2 * powb(10, 11-i)
+					} else if b[309+i] == 51 {
+						sv4 += 3 * powb(10, 11-i)
+					} else if b[309+i] == 52 {
+						sv4 += 4 * powb(10, 11-i)
+					} else if b[309+i] == 53 {
+						sv4 += 5 * powb(10, 11-i)
+					} else if b[309+i] == 54 {
+						sv4 += 6 * powb(10, 11-i)
+					} else if b[309+i] == 55 {
+						sv4 += 7 * powb(10, 11-i)
+					} else if b[309+i] == 56 {
+						sv4 += 8 * powb(10, 11-i)
+					} else if b[309+i] == 57 {
+						sv4 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+				var bp5 int64
+				bp5 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[322+i] == 49 {
+						bp5 += powb(10, 9-n)
+					} else if b[322+i] == 50 {
+						bp5 += 2 * powb(10, 9-n)
+					} else if b[322+i] == 51 {
+						bp5 += 3 * powb(10, 9-n)
+					} else if b[322+i] == 52 {
+						bp5 += 4 * powb(10, 9-n)
+					} else if b[322+i] == 53 {
+						bp5 += 5 * powb(10, 9-n)
+					} else if b[322+i] == 54 {
+						bp5 += 6 * powb(10, 9-n)
+					} else if b[322+i] == 55 {
+						bp5 += 7 * powb(10, 9-n)
+					} else if b[322+i] == 56 {
+						bp5 += 8 * powb(10, 9-n)
+					} else if b[322+i] == 57 {
+						bp5 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var bv5 int64
+				bv5 = 0
+				for i := 0; i < 12; i++ {
+					if b[334+i] == 49 {
+						bv5 += powb(10, 11-i)
+					} else if b[334+i] == 50 {
+						bv5 += 2 * powb(10, 11-i)
+					} else if b[334+i] == 51 {
+						bv5 += 3 * powb(10, 11-i)
+					} else if b[334+i] == 52 {
+						bv5 += 4 * powb(10, 11-i)
+					} else if b[334+i] == 53 {
+						bv5 += 5 * powb(10, 11-i)
+					} else if b[334+i] == 54 {
+						bv5 += 6 * powb(10, 11-i)
+					} else if b[334+i] == 55 {
+						bv5 += 7 * powb(10, 11-i)
+					} else if b[334+i] == 56 {
+						bv5 += 8 * powb(10, 11-i)
+					} else if b[334+i] == 57 {
+						bv5 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var sp5 int64
+				sp5 = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[347+i] == 49 {
+						sp5 += powb(10, 9-n)
+					} else if b[347+i] == 50 {
+						sp5 += 2 * powb(10, 9-n)
+					} else if b[347+i] == 51 {
+						sp5 += 3 * powb(10, 9-n)
+					} else if b[347+i] == 52 {
+						sp5 += 4 * powb(10, 9-n)
+					} else if b[347+i] == 53 {
+						sp5 += 5 * powb(10, 9-n)
+					} else if b[347+i] == 54 {
+						sp5 += 6 * powb(10, 9-n)
+					} else if b[347+i] == 55 {
+						sp5 += 7 * powb(10, 9-n)
+					} else if b[347+i] == 56 {
+						sp5 += 8 * powb(10, 9-n)
+					} else if b[347+i] == 57 {
+						sp5 += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var sv5 int64
+				sv5 = 0
+				for i := 0; i < 12; i++ {
+					if b[359+i] == 49 {
+						sv5 += powb(10, 11-i)
+					} else if b[359+i] == 50 {
+						sv5 += 2 * powb(10, 11-i)
+					} else if b[359+i] == 51 {
+						sv5 += 3 * powb(10, 11-i)
+					} else if b[359+i] == 52 {
+						sv5 += 4 * powb(10, 11-i)
+					} else if b[359+i] == 53 {
+						sv5 += 5 * powb(10, 11-i)
+					} else if b[359+i] == 54 {
+						sv5 += 6 * powb(10, 11-i)
+					} else if b[359+i] == 55 {
+						sv5 += 7 * powb(10, 11-i)
+					} else if b[359+i] == 56 {
+						sv5 += 8 * powb(10, 11-i)
+					} else if b[359+i] == 57 {
+						sv5 += 9 * powb(10, 11-i)
+					} else {
+					}
+				}
+
+				var precloseiopv int64
+				precloseiopv = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[372+i] == 49 {
+						precloseiopv += powb(10, 9-n)
+					} else if b[372+i] == 50 {
+						precloseiopv += 2 * powb(10, 9-n)
+					} else if b[372+i] == 51 {
+						precloseiopv += 3 * powb(10, 9-n)
+					} else if b[372+i] == 52 {
+						precloseiopv += 4 * powb(10, 9-n)
+					} else if b[372+i] == 53 {
+						precloseiopv += 5 * powb(10, 9-n)
+					} else if b[372+i] == 54 {
+						precloseiopv += 6 * powb(10, 9-n)
+					} else if b[372+i] == 55 {
+						precloseiopv += 7 * powb(10, 9-n)
+					} else if b[372+i] == 56 {
+						precloseiopv += 8 * powb(10, 9-n)
+					} else if b[372+i] == 57 {
+						precloseiopv += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				var iopv int64
+				iopv = 0
+				for i := 0; i < 11; i++ {
+					n := 0
+					if i == 7 {
+						continue
+					} else if i > 7 {
+						n = i - 1
+					} else {
+						n = i
+					}
+
+					if b[384+i] == 49 {
+						iopv += powb(10, 9-n)
+					} else if b[384+i] == 50 {
+						iopv += 2 * powb(10, 9-n)
+					} else if b[384+i] == 51 {
+						iopv += 3 * powb(10, 9-n)
+					} else if b[384+i] == 52 {
+						iopv += 4 * powb(10, 9-n)
+					} else if b[384+i] == 53 {
+						iopv += 5 * powb(10, 9-n)
+					} else if b[384+i] == 54 {
+						iopv += 6 * powb(10, 9-n)
+					} else if b[384+i] == 55 {
+						iopv += 7 * powb(10, 9-n)
+					} else if b[384+i] == 56 {
+						iopv += 8 * powb(10, 9-n)
+					} else if b[384+i] == 57 {
+						iopv += 9 * powb(10, 9-n)
+					} else {
+					}
+				}
+
+				status1 := b[396]
+
+				var status2 int64
+				status2 = 0
+				for i := 0; i < 3; i++ {
+					if b[397+i] == 49 {
+						status2 += powb(10, 2-i)
+					} else {
+					}
+				}
+				timestamp := make([]byte, 9)
+				//copy(timestamp, b[405:417])
+				copy(timestamp[0:2], b[405:407])
+				copy(timestamp[2:4], b[408:410])
+				copy(timestamp[4:6], b[411:413])
+				copy(timestamp[6:9], b[414:417])
+
+				debug := false
+				temp := string(timestamp)
+				if debug {
+					fmt.Printf("\n---[code|%v] [volume|%d] [amount|%d] [lastprice|%d]", code, volume, amount, lastprice)
+					fmt.Printf(" [open|%d] [high|%d] [low|%d] [tradeprice|%d] [closepx|%d]", open, high, low, tradeprice, closepx)
+					fmt.Printf(" [bp1|%d] [bv1|%d] [sp1|%d] [sv1|%d]", bp1, bv1, sp1, sv1)
+					fmt.Printf(" [bp2|%d] [bv2|%d] [sp2|%d] [sv2|%d]", bp2, bv2, sp2, sv2)
+					fmt.Printf(" [bp3|%d] [bv3|%d] [sp3|%d] [sv3|%d]", bp3, bv3, sp3, sv3)
+					fmt.Printf(" [bp4|%d] [bv4|%d] [sp4|%d] [sv4|%d]", bp4, bv4, sp4, sv4)
+					fmt.Printf(" [bp5|%d] [bv5|%d] [sp5|%d] [sv5|%d]", bp5, bv5, sp5, sv5)
+					fmt.Printf(" [precloseiopv|%d] [iopv|%d]", precloseiopv, iopv)
+					fmt.Printf(" [status1|%v] [status2|%d]", status1, status2)
+					fmt.Printf(" [timestamp|%s]", temp)
+					fmt.Println("---")
+				}
+
+				//msgpack序列化
+				_code := string(code) + ".SH"
+				
+				timestamp_buf, err := strconv.ParseInt(string(timestamp), 10, 32)
+				if err != nil {
+					log.Error("string to int32 err: ", err)
+				}
+				_time := int32(timestamp_buf)
+				
+				var _status string
+				if status1 == 0x43 {//C => I
+					_status = "I"
+				}else if status1 == 0x54 {//T => O
+					_status = "O"
+				}else if status1 == 0x50 {//P => B
+					_status = "B"
+				}
+				
+				_preClose := float64(lastprice)/1000.0
+				_open := float64(open)/1000.0
+				_high := float64(high)/1000.0
+				_low := float64(low)/1000.0
+				_match := float64(tradeprice)/1000.0
+				var _askPrice = [10]float64{float64(sp1)/1000.0, float64(sp2)/1000.0, float64(sp3)/1000.0, float64(sp4)/1000.0, float64(sp5)/1000.0}
+				var _askVol = [10]int32{int32(sv1), int32(sv2), int32(sv3), int32(sv4), int32(sv5)}
+				var _bidPrice = [10]float64{float64(bp1)/1000.0, float64(bp2)/1000.0, float64(bp3)/1000.0, float64(bp4)/1000.0, float64(bp5)/1000.0}
+				var _bidVol = [10]int32{int32(bv1), int32(bv2), int32(bv3), int32(bv4), int32(bv5)}
+				_IOPV := float64(iopv)/1000.0
+				_turnover := amount/100
+				
+				debug = false
+				if debug {
+					fmt.Printf("[code|%v] [time|%d] [status|%v] [preClose|%f]", _code, _time, _status, _preClose)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] [match|%f]", _open, _high, _low, _match)
+					fmt.Printf(" [askPrice|%v] [askVol|%v] [bidPrice|%v] [bidVol|%v]", _askPrice, _askVol, _bidPrice, _bidVol)
+					fmt.Printf(" [volume|%d] [turnover|%d] [IOPV|%f]\n", volume, _turnover, _IOPV)
+				}
+				
+				marketData := base.Marketdata{Code:_code, Time:_time, Status:_status, PreClose:_preClose, Open:_open, High:_high, Low:_low, Match:_match, AskPrice:_askPrice, AskVol:_askVol, BidPrice:_bidPrice, BidVol:_bidVol, Volume:volume, Turnover:_turnover, IOPV: _IOPV}
+				
+				data, err := msgpack.Marshal(&marketData)
+				if err != nil {
+				    panic(err)
+				}
+				
+				debug = false
+				if debug {
+					fmt.Printf("data|%v\n", data)
+					var mData base.Marketdata
+					err = msgpack.Unmarshal(data, &mData)
+					if err != nil {
+				    	panic(err)
+					}
+					fmt.Printf("Unmarshal:[code|%v] [time|%d] [status|%v] [preClose|%f]", mData.Code, mData.Time, mData.Status, mData.PreClose)
+					fmt.Printf(" [open|%f] [high|%f] [low|%f] [match|%f]", mData.Open, mData.High, mData.Low, mData.Match)
+					fmt.Printf(" [askPrice|%v] [askVol|%v] [bidPrice|%v] [bidVol|%v]", mData.AskPrice, mData.AskVol, mData.BidPrice, mData.BidVol)
+					fmt.Printf(" [volume|%d] [turnover|%d] [IOPV|%f]\n", mData.Volume, mData.Turnover, mData.IOPV)
+				}
+
+				if count == 10 {
+					ct2 := time.Now().Sub(tt1)
+					fmt.Printf("%d %d %v\n", seq, count, ct2)
+				}
+				_data := make([]byte, len(data) + 1)
+				//上交所标志
+				_data[0] = 0x2
+				copy(_data[1:], data)
+				rb.Put(_data)
+				mysqlRb.Put(marketData)
+			}
+
+		}(i)
+	}
+}
+
+func powb(x, n int) int64 {
+	if n == 0 {
+		return 1
+	}
+	for {
+		if (n & 1) != 0 {
+			break
+		}
+		n >>= 1
+		x *= x
+	}
+	result := x
+	n >>= 1
+	for {
+		if n == 0 {
+			break
+		}
+		x *= x
+		if (n & 1) != 0 {
+			result *= x
+		}
+		n >>= 1
+	}
+	return int64(result)
+}

@@ -1,0 +1,81 @@
+package main
+
+import (
+	log "github.com/thinkboy/log4go"
+	"github.com/vmihailenco/msgpack"
+	"github.com/widuu/goini"
+	hqbase "quant/hqserver/base"
+	sb "quant/strategy/sbase"
+	"time"
+)
+
+type DeltaHedge struct {
+	base               sb.Sbase
+	RiskAversionRation float64
+	RiskFreeReturn     float64
+	DelteUp            float64
+	DelteDown          float64
+	HedgeInterval      float64
+	StrikePrice        float64
+	conf               *goini.Config
+}
+
+func (dh *DeltaHedge) Init() {
+	dh.conf = goini.SetConfig("./conf/strategy/s_deltahedge.ini")
+	dh.base.SubQuoteCodes = dh.conf.GetValue("deltahedge", "subcode")
+	dh.RiskAversionRation = dh.conf.GetFloat64("deltahedge", "risk_aversion_ratio")
+	dh.RiskFreeReturn = dh.conf.GetFloat64("deltahedge", "risk_free_return")
+	dh.DelteUp = dh.conf.GetFloat64("deltahedge", "delta_up")
+	dh.DelteDown = dh.conf.GetFloat64("deltahedge", "delta_down")
+	dh.HedgeInterval = dh.conf.GetFloat64("deltahedge", "hedge_interval")
+	dh.StrikePrice = dh.conf.GetFloat64("deltahedge", "strike_price")
+	dh.base.StrategyName = "DeltaHedge"
+	dh.base.Init()
+}
+
+func (dh *DeltaHedge) GeneratePortfolio() {
+
+}
+
+func (dh *DeltaHedge) GetDelta(last float64) float64 {
+	return 0.5
+}
+
+func (dh *DeltaHedge) CalcSignal() {
+
+}
+
+func (dh *DeltaHedge) Run(waitchan chan int) {
+	log.Info("DeltaHedge running")
+	for i := 0; true; i++ {
+		msg, err := dh.base.HqModuleSub.RecvMessage(0)
+		if err != nil {
+			log.Error("DeltaHedge recevice data error: %s\n", err.Error())
+			break
+		}
+		data := msg[1]
+
+		var mkdat hqbase.Marketdata
+		err = msgpack.Unmarshal([]byte(data), &mkdat)
+		log.Info("timestamp:%d %+v\n", time.Now().UnixNano()/1e6, mkdat)
+	}
+	dh.base.Release()
+	log.Info("before write waitchan\n")
+	waitchan <- 0
+	log.Info("after write waitchan\n")
+}
+
+func main() {
+	log.LoadConfiguration("./conf/quant_log.xml")
+	log.Info("Main start ")
+
+	dh := new(DeltaHedge)
+	dh.Init()
+
+	waitchan := make(chan int)
+	go dh.Run(waitchan)
+
+	log.Info("Main thread wait for exit\n")
+	<-waitchan
+	log.Info("Main Exit\n")
+}

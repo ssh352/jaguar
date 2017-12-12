@@ -1,0 +1,459 @@
+package main
+
+import (
+	"flag"
+	"net"
+	"os"
+	"strings"
+	"sync"
+	"time"
+	"quant/hqserver/vss/config"
+	redis "quant/hqserver/vss/redis"
+	"quant/hqserver/vss/struc"
+
+	"github.com/Workiva/go-datastructures/queue"
+	log "github.com/thinkboy/log4go"
+//	zmq "github.com/vaughan0/go-zmq"
+	zmq "github.com/pebbe/zmq3"
+)
+
+var (
+	rb        *queue.RingBuffer
+	RedisPool *redis.ConnPool
+)
+
+func main() {
+	flag.Parse()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	if err := config.InitConfig(); err != nil {
+		panic(err)
+	}
+	var REDIS = map[string]string{
+		"host":         config.Conf.RedisHost,
+		"database":     config.Conf.Database,
+		"password":     config.Conf.RedisPassword,
+		"maxOpenConns": config.Conf.MaxOpenConns,
+		"maxIdleConns": config.Conf.MaxIdleConns,
+	}
+	RedisPool = redis.InitRedis(REDIS)
+	_, err := RedisPool.Do("PING")
+	if err != nil {
+		log.Info("redis error")
+		panic(err)
+	}
+	// 初始化ringbuffer
+	rb = queue.NewRingBuffer(6000)
+
+	header := struc.NewHeader(1, 92)
+	// 初始化vss登录信息
+	var logonInfo = map[string]string{
+		"SenderCompID":     "CS63                ",
+		"TargetCompID":     "GFZB                ",
+		"Password":         "GFZB            ",
+		"DefaultApplVerID": "1.02                            ",
+	}
+	logon := struc.NewLogon(logonInfo)
+	// 初始化vss服务连接信息
+	var CONN = map[string]string{
+		"host":     config.Conf.VssHost,
+		"protocol": config.Conf.ConnType,
+	}
+	// 获取vss服务连接
+	conn, err := login(logon, header, CONN)
+	checkError(err)
+	go heartbeat(conn)
+
+	go receiveMarketData(conn)
+
+	go sendToZMQ()
+	//	go queryRedis("300663  ,000825  ,399238  ")
+	go setToRedisForHashMap()
+	wg.Wait()
+	os.Exit(0)
+}
+
+// 心跳
+func heartbeat(conn *net.TCPConn) {
+	var err error
+	header := struc.NewHeader(3, 0)
+	headerlen := 8
+	tailerlen := 4
+	heartbeatbodylen := 0
+	heartbeatmsglen := headerlen + tailerlen + heartbeatbodylen
+	sendmsg := make([]byte, heartbeatmsglen)
+	copy(sendmsg, header.Marshal())
+	copy(sendmsg[8:], ck(sendmsg[:8]))
+	log.Info("heartbeatmsg %v\n", sendmsg)
+	for {
+		time.Sleep(time.Second * time.Duration(60))
+		_, err = conn.Write(sendmsg) //发送HTTP请求头
+		if err != nil {
+			log.Info("%v\n", err)
+		}
+	}
+
+}
+
+// 接收数据，并处理
+func receiveMarketData(conn *net.TCPConn) {
+	headerlen := uint(8) // 消息头长度
+	tailerlen := uint(4) // 消息尾长度
+	for {
+		offset := uint(0)
+		headermsg := make([]byte, headerlen)
+		for {
+			if offset < headerlen {
+				rl, _ := conn.Read(headermsg[offset:])
+				offset += uint(rl)
+			} else {
+				break
+			}
+		}
+
+		// 行情类别
+		msgtype := bytestoint(headermsg[:4])
+		bodylength := bytestoint(headermsg[4:])
+		bodymsg := make([]byte, bodylength)
+		offset = 0
+		for {
+			if offset < bodylength {
+				rl, _ := conn.Read(bodymsg[offset:])
+				offset += uint(rl)
+			} else {
+				break
+			}
+		}
+
+		tailmsg := make([]byte, tailerlen)
+		offset = 0
+		for {
+			if offset < tailerlen {
+				rl, _ := conn.Read(tailmsg[offset:])
+				offset += uint(rl)
+			} else {
+				break
+			}
+		}
+		headerandbody := make([]byte, headerlen+bodylength)
+		copy(headerandbody, headermsg)
+		copy(headerandbody[headerlen:], bodymsg)
+		cksum := ck(headerandbody)
+		for i := uint(0); i < tailerlen; i++ {
+			if tailmsg[i] != cksum[i] {
+				log.Info("cksum error!!!!!\n")
+				break
+			}
+		}
+
+	//	log.Info("body msg:%v\n", bodymsg)
+		/* 消息总长度：行情类别（1） + 消息内容长度 + 消息体结尾：127（1） + 记录末尾：21（1）
+		 * 行情类别：11-深圳股票和ETF(300111)；12-深圳指数(309011)；13-深圳盘后定价信息(300611)
+		 */
+		bodyTotalLen := 1 + len(bodymsg) + 1 + 1
+		mk := make([]byte, bodyTotalLen)
+
+		switch msgtype {
+		case 390019:
+			log.Info("390019 市场实时动态\n")
+		case 390013:
+			log.Info("390013 证券实时动态\n")
+		case 390012:
+			log.Info("390012 公告\n")
+		case 300111:
+			log.Info("300111 集中竞价交易业务行情快照\n")
+		//	securityid := bodymsg[13:21]
+		//	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+			// 设置行情类别
+			mk[0] = 0xb
+			// 设置消息体
+			copy(mk[1:1+len(bodymsg)], bodymsg)
+			// 设置消息结尾标志(以127结尾)
+			mk[bodyTotalLen-1-1] = 0x7f
+			// 设置行情记录结束标志（以21结尾）
+			mk[bodyTotalLen-1] = 0x15
+		//	securityid1 := mk[14:22]
+		//	log.Info("!!!!!!!证券代码1:%s %v\n", string(securityid1), securityid1)
+			rb.Put(mk)
+		case 300611:
+			log.Info("300611 盘后定价交易业务行情快照\n")
+		//	securityid := bodymsg[13:21]
+		//	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+			// 设置行情类别
+			mk[0] = 0xd
+			// 设置消息体
+			copy(mk[1:1+len(bodymsg)], bodymsg)
+			// 设置消息结尾标志(以127结尾)
+			mk[bodyTotalLen-1-1] = 0x7f
+			// 设置行情记录结束标志（以21结尾）
+			mk[bodyTotalLen-1] = 0x15
+		//	securityid1 := mk[14:22]
+		//	log.Info("!!!!!!!证券代码1:%s %v\n", string(securityid1), securityid1)
+			rb.Put(mk)
+		case 306311:
+			log.Info("306311 港股实时行情快照\n")
+		case 309011:
+			log.Info("309011 指数行情快照\n")
+		//	securityid := bodymsg[13:21]
+		//	log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+			// 设置行情类别
+			mk[0] = 0xc
+			// 设置消息体
+			copy(mk[1:1+len(bodymsg)], bodymsg)
+			// 设置消息结尾标志(以127结尾)
+			mk[bodyTotalLen-1-1] = 0x7f
+			// 设置行情记录结束标志（以21结尾）
+			mk[bodyTotalLen-1] = 0x15
+	//		securityid1 := mk[14:22]
+		//	log.Info("!!!!!!!证券代码1:%s %v\n", string(securityid1), securityid1)
+			rb.Put(mk)
+		case 309111:
+			log.Info("309111 成交量统计指标行情\n")
+		case 300192:
+			log.Info("300192 集中竞价业务逐笔委托行情\n")
+		case 300592:
+			log.Info("300592 协议交易业务逐笔委托行情\n")
+		case 300792:
+			log.Info("300792 转融通证券出借业务逐笔委托行情\n")
+		case 300191:
+			log.Info("300192 集中竞价业务逐笔成交行情\n")
+		case 300591:
+			log.Info("300592 协议交易业务逐笔成交行情\n")
+		case 300791:
+			log.Info("300792 转融通证券出借业务逐笔成交行情\n")
+		default:
+			log.Info("%d wtf!!!\n", msgtype)
+		}
+	}
+
+}
+
+// 登录vss服务
+func login(logon *struc.Logon, header *struc.Header, CONN map[string]string) (*net.TCPConn, error) {
+	headerlen := 8
+	tailerlen := 4
+	logonbodylen := 92
+	logonmsglen := headerlen + tailerlen + logonbodylen
+	sendmsg := make([]byte, logonmsglen)
+	copy(sendmsg, header.Marshal())
+	copy(sendmsg[8:], logon.Marshal())
+	copy(sendmsg[100:], ck(sendmsg[:100]))
+
+	log.Info("host:%s, proto:%s\n", CONN["host"], CONN["protocol"])
+	tcpAddr, err := net.ResolveTCPAddr(CONN["protocol"], CONN["host"]) //获取一个TCP地址信息,TCPAddr
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		return nil, err
+	}
+	conn, err := net.DialTCP("tcp", nil, tcpAddr) //创建一个TCP连接:TCPConn
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		return nil, err
+	}
+	_, err = conn.Write(sendmsg) //发送HTTP请求头
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		return nil, err
+	}
+	result := make([]byte, logonmsglen)
+	llen, err := conn.Read(result)
+	if err != nil {
+		log.Info("3 登陆网关失败 %d\n", llen)
+		return nil, err
+	}
+	log.Info("llen %d\n", llen)
+	log.Info("%v\n", result)
+	if llen > 0 {
+		if result[3] == 1 {
+			log.Info("登陆网关成功\n")
+		} else {
+			log.Info("1 登陆网关失败 %s %v\n", result[3], result[3])
+		}
+	} else {
+		log.Info("2 登陆网关失败 %d %v\n", result[3], result[3])
+	}
+	return conn, nil
+}
+
+// 将行情数据发送到zeroMQ
+func sendToZMQ() {
+	log.Info("-----sendToZMQ-----")
+//	context, _ := zmq.NewContext()
+//	defer context.Close()
+
+//	socket, _ := context.Socket(zmq.Pub)
+	socket, _ := zmq.NewSocket(zmq.PUB)
+        defer socket.Close()
+	socket.Bind(config.Conf.ZMQBind)
+        log.Info("------socket start on:%v------\n", config.Conf.ZMQBind)
+        var topic string
+	i := 0
+	for {
+		msg, _ := rb.Get()
+		b := msg.([]byte)
+	//	socket.SendPart(b, false)
+               // var topic string
+                if b[20] != 32 && b[21] != 32 {
+                        topic = string(b[14:22]) + ".SZ"
+                }else{
+                        topic = string(b[14:20]) + ".SZ"
+                }
+                log.Info("topic:%s, b[20]:%v, b[21]:%v\n", topic, b[20], b[21])
+                socket.Send(topic, zmq.SNDMORE)
+                socket.SendBytes(b, 0)
+		time.Sleep(time.Nanosecond)
+                log.Info("发送数据: %d, b:%v, len %d\n", i, b, len(b))
+		i++
+	}
+}
+
+// 查询redis行情，并解析
+func queryRedis(codes string) {
+	codelist := strings.Split(codes, ",")
+	md, err := RedisPool.GetMHashMapString("MarketMap_test", codelist)
+	//	md, err := RedisPool.GetAllHashMapString("MarketMap_test")
+	if err != nil {
+		log.Error("QueryStock ", err)
+	}
+	//	log.Info("md:%v\n", md)
+	for i := 0; i < len(md); i++ {
+		log.Info("反序列化redis数据库二进制数据！")
+		data := md[i]
+		bodymsg := []byte(data)
+		mktype := bytestoint(bodymsg[:1])
+		log.Info("!!!!!!!行情类型：%d\n", mktype)
+		timestamp := bytestoint(bodymsg[1:9])
+		log.Info("!!!!!!!时间戳:%d\n", timestamp)
+		channelno := bytestoint(bodymsg[9:11])
+		log.Info("!!!!!!!频道代码:%d\n", channelno)
+		mdstreamid := bodymsg[11:14]
+		log.Info("!!!!!!!行情类别:%s %v\n", string(mdstreamid), mdstreamid)
+		securityid := bodymsg[14:22]
+		log.Info("!!!!!!!证券代码:%s %v\n", string(securityid), securityid)
+		securityidsource := bodymsg[22:26]
+		log.Info("!!!!!!!证券代码源:%s %v\n", string(securityidsource), securityidsource)
+		tradingPhaseCode := bodymsg[26:34]
+		log.Info("!!!!!!!产品所处的交易阶段代码:%s %v\n", string(tradingPhaseCode), tradingPhaseCode)
+		preClosePx := bytestoint(bodymsg[34:42])
+		log.Info("!!!!!!!昨收盘:%d\n", preClosePx)
+		numTrades := bytestoint(bodymsg[42:50])
+		log.Info("!!!!!!!成交笔数:%d\n", numTrades)
+		totalVolumeTrade := bytestoint(bodymsg[50:58])
+		log.Info("!!!!!!!成交总量:%d\n", totalVolumeTrade)
+		totalValueTrade := bytestoint(bodymsg[58:66])
+		log.Info("!!!!!!!成交总金额:%d %v\n", totalValueTrade, bodymsg[58:66])
+		noMdEntries := bytestoint(bodymsg[66:70])
+		log.Info("!!!!!!!行情条目个数:%d\n", noMdEntries)
+		// 深圳股票和ETF
+		if mktype == 11 {
+			byteoffset := uint(0)
+			for i := uint(0); i < noMdEntries; i++ {
+				mDEntryType := bodymsg[70+byteoffset : 72+byteoffset]
+				log.Info("!!!!!!![%d] 行情条目类别:%s\n", i+1, string(mDEntryType))
+				mDEntryPx := bytestoint(bodymsg[72+byteoffset : 80+byteoffset])
+				log.Info("!!!!!!![%d] 价格:%d\n", i+1, mDEntryPx)
+				mDEntrySize := bytestoint(bodymsg[80+byteoffset : 88+byteoffset])
+				log.Info("!!!!!!![%d] 数量:%d\n", i+1, mDEntrySize)
+				mDPriceLevel := bytestoint(bodymsg[88+byteoffset : 90+byteoffset])
+				log.Info("!!!!!!![%d] 买卖盘档位:%d\n", i+1, mDPriceLevel)
+				numberOfOrders := bytestoint(bodymsg[90+byteoffset : 98+byteoffset])
+				log.Info("!!!!!!![%d] 价位总委托笔数:%d\n", i+1, numberOfOrders)
+				noOrders := bytestoint(bodymsg[98+byteoffset : 102+byteoffset])
+				log.Info("!!!!!!![%d] 价位揭示委托笔数:%d\n", i+1, noOrders)
+				j := uint(0)
+				for ; j < noOrders; j++ {
+					orderQty := bytestoint(bodymsg[102+byteoffset+8*j : 110+byteoffset+8*j])
+					log.Info("!!!!!!![%d] [%d] 委托数量:%d\n", i+1, j+1, orderQty)
+				}
+				byteoffset += j*8 + 32
+			}
+		}
+
+		// 深圳指数
+		if mktype == 12 {
+			byteoffset := uint(0)
+			for i := uint(0); i < noMdEntries; i++ {
+				mDEntryType := bodymsg[70+byteoffset : 72+byteoffset]
+				log.Info("!!!!!!![%d] 行情条目类别:%s\n", i+1, string(mDEntryType))
+				mDEntryPx := bytestoint(bodymsg[72+byteoffset : 80+byteoffset])
+				log.Info("!!!!!!![%d] 价格:%d\n", i+1, mDEntryPx)
+				byteoffset += 10
+			}
+		}
+
+		// 深圳盘后定价信息
+		if mktype == 13 {
+			byteoffset := uint(0)
+			for i := uint(0); i < noMdEntries; i++ {
+				mDEntryType := bodymsg[70+byteoffset : 72+byteoffset]
+				log.Info("!!!!!!![%d] 行情条目类别:%s\n", i+1, string(mDEntryType))
+				mDEntryPx := bytestoint(bodymsg[72+byteoffset : 80+byteoffset])
+				log.Info("!!!!!!![%d] 价格:%d\n", i+1, mDEntryPx)
+				mDEntrySize := bytestoint(bodymsg[80+byteoffset : 88+byteoffset])
+				log.Info("!!!!!!![%d] 数量:%d\n", i+1, mDEntrySize)
+				byteoffset += 18
+			}
+		}
+
+	}
+}
+
+// 将数据插入redis
+func setToRedisForHashMap() {
+	data := make(map[string]interface{})
+	i := 0
+	for {
+		msg, _ := rb.Get()
+		b := msg.([]byte)
+		code := string(b[14:22])
+//		log.Info("code[%s], b:%v\n", code, b)
+		data[code] = string(b)
+		if len(data) == 200 {
+			md, err := RedisPool.SetHashMap("MarketMap_test", data)
+			//	log.Info("data:%v\n", data)
+			if err != nil {
+				log.Error("insert to HashMap error: ", err)
+			}
+			log.Info("插入redis数据库成功!插入记录：%v", md)
+			for k, _ := range data {
+				delete(data, k)
+			}
+		}
+		i++
+	}
+}
+func ck(msg []byte) []byte {
+	sum := uint(0)
+	l := len(msg)
+	for i := 0; i < l; i++ {
+		sum += uint(msg[i])
+	}
+	ck := uint(sum % 256)
+	data := make([]byte, 4)
+	data[0] = (byte)((ck & 0xFF000000) >> 24)
+	data[1] = (byte)((ck & 0x00FF0000) >> 16)
+	data[2] = (byte)((ck & 0x0000FF00) >> 8)
+	data[3] = (byte)(ck & 0x000000FF)
+	return data
+}
+
+func bytestoint(data []byte) (x1 uint) {
+	x1 = uint(0)
+	l := len(data)
+	for i := 0; i < l; i++ {
+		if i != l-1 {
+			shift := uint(8 * i)
+			x1 |= uint(data[l-1-i]) & 0XFF << shift
+		} else {
+			x1 |= uint(data[i]) & 0XFF
+		}
+	}
+	return
+}
+
+func checkError(err error) {
+	if err != nil {
+		log.Info("Fatal error: %s\n", err.Error())
+		panic(err)
+	}
+}

@@ -1,0 +1,28 @@
+package main
+
+import (
+	"github.com/Workiva/go-datastructures/queue"
+	log "github.com/thinkboy/log4go"
+	emsbase "quant/emsmodule/base"
+)
+
+type AlgorithmAdmin struct {
+	Portqueue *queue.RingBuffer
+}
+
+func (admin *AlgorithmAdmin) Run() {
+	for {
+		port, _ := admin.Portqueue.Get()
+		p := port.(emsbase.Portfolio)
+		for _, e := range p.SecurityEntrusts {
+			if e.Algorithm == "" {
+				itrade, ok := adaptersMap[p.AdapterName]
+				if ok {
+					itrade.LimitEntrust(e, p.AccountID, p.CombiNo)
+				} else {
+					log.Error("AlgorithmAdmin can't find \"%s\" trade adapter.", p.AdapterName)
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,48 @@
+package main
+
+import (
+	// "fmt"
+	log "github.com/thinkboy/log4go"
+	"github.com/widuu/goini"
+	"quant/emsmodule/emsbase"
+	"quant/helper"
+	// "strconv"
+	// "time"
+	"util/db"
+)
+
+const (
+	insertordersql string = "INSERT INTO jqorder(tactic_id,tactic_type,strategy_name, " +
+		"prodid,account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
+		"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
+		"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+
+// insertordersql string = "INSERT INTO `order`(tactic_id,tactic_type,strategy_name, " +
+// 	"prodid, account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
+// 	"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
+// 	"VALUES(\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",%f,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",\"%s\")"
+)
+
+type record struct {
+	dbworker *db.MysqlWorker
+	conf     *goini.Config
+	sqls     chan string
+	ports    chan emsbase.Portfolio
+}
+
+func (r *record) init() {
+	r.conf = goini.SetConfig(helper.QuantConfigFile)
+	config := db.MysqlConfig{
+		MysqlUsernName: r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlUserName),
+		MysqlPwd:       r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlPwd),
+		MysqlURL:       r.conf.GetStr(helper.ConfigMysqlSessionName, helper.ConfigMysqlUrl),
+	}
+	r.sqls = make(chan string, r.conf.GetInt(helper.ConfigEMSSessionName, helper.ConfigEMSSqlLen))
+	r.dbworker = &db.MysqlWorker{SQLs: r.sqls, MysqlConfig: &config}
+	err := r.dbworker.Init()
+	if err != nil {
+		log.Error("EMS connect to mysql fail. mysqlurl: %s. Error:%s.", r.dbworker.MysqlURL, err.Error())
+	} else {
+		log.Info("EMS connect to %s mysql.", r.dbworker.MysqlURL)
+	}
+}

@@ -1,0 +1,46 @@
+package base
+
+import (
+	log "github.com/thinkboy/log4go"
+)
+
+type Portfolio struct {
+	SecurityEntrusts []Entrust
+	FutureEntrusts   []Entrust
+}
+
+type Entrust struct {
+	Code          string  // 证券代码
+	Price         float64 // 委托价格
+	Vol           int     // 委托数量
+	OpenCloseFlag int     // 开平标记 1：开，2：平
+	BS            int     // 买卖方向 1：买，2：卖
+	TimeStamp     int64   // 订单生成时间戳
+}
+
+type EntrustType struct {
+	OpenCloseFlag int // 开平标记 1：开，2：平
+	BS            int // 买卖方向 1：买，2：卖
+}
+
+const QUANT_EMS_DO_NOTHING int = 0
+const QUANT_EMS_OPEN int = 1
+const QUANT_EMS_CLOSE int = 2
+const QUANT_EMS_BUY int = 1
+const QUANT_EMS_SELL int = 2
+
+const QUANT_EMS_OPEN_LONG int = 1
+const QUANT_EMS_OPEN_SHORT int = 2
+const QUANT_EMS_CLOSE_LONG int = 3
+const QUANT_EMS_CLOSE_SHORT int = 3
+
+var EntrustTypeMap map[int]EntrustType
+
+func init() {
+	log.Info("Init emsmodule/base package")
+	EntrustTypeMap = make(map[int]EntrustType)
+	EntrustTypeMap[QUANT_EMS_OPEN_LONG] = EntrustType{QUANT_EMS_OPEN, QUANT_EMS_BUY}
+	EntrustTypeMap[QUANT_EMS_OPEN_SHORT] = EntrustType{QUANT_EMS_OPEN, QUANT_EMS_SELL}
+	EntrustTypeMap[QUANT_EMS_CLOSE_LONG] = EntrustType{QUANT_EMS_CLOSE, QUANT_EMS_BUY}
+	EntrustTypeMap[QUANT_EMS_CLOSE_SHORT] = EntrustType{QUANT_EMS_CLOSE, QUANT_EMS_SELL}
+}

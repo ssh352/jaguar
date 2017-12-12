@@ -1,0 +1,31 @@
+# VSS configuration file
+
+# VSS basic configuration
+[vss]
+conntype tcp4
+vsshost 10.2.130.142:1063
+SenderCompID CS63                
+TargetCompID GFZB                
+HeartBtInt 256
+Password GFZB            
+DefaultApplVerID 1.02                            
+
+
+# redis configuration
+[redis]
+redishost 10.2.122.23:6379
+database 0
+password redis
+maxOpenConns 1000
+maxIdleConns 1000
+
+# ZeroMQ configuration
+[zmq]
+zmq.bind.addr tcp://*:6666
+
+# shanghai configuration
+[sh]
+pidfile /tmp/marketdata.pid
+log ./config/marketdata-log.xml
+filename /opt/goproject/src/quant/hqserver/marketdata/mktdt00.txt
+readfileinterval 2
