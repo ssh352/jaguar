@@ -21,6 +21,8 @@
 }
 .image {
 }
+.placeholder {
+}
 .heading_1 {
   font-family:'Arial Normal', 'Arial';
   font-weight:bold;
@@ -67,6 +69,11 @@
   text-align:left;
 }
 .paragraph {
+  font-family:'Arial Normal', 'Arial';
+  font-weight:400;
+  font-style:normal;
+  font-size:14px;
+  color:#FFFFFF;
   text-align:left;
 }
 .text_link {
@@ -121,7 +128,7 @@
   color:#000000;
 }
 .paragraph1 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:400;
   font-style:normal;
   text-align:left;
@@ -131,21 +138,21 @@
 .arrow {
 }
 .heading_11 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:bold;
   font-style:normal;
   font-size:32px;
   text-align:left;
 }
 .heading_21 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:bold;
   font-style:normal;
   font-size:24px;
   text-align:left;
 }
 .primary_text_dark {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:400;
   font-style:normal;
   font-size:14px;
@@ -153,14 +160,14 @@
   text-align:left;
 }
 .flat_button {
-  font-family:'Roboto-Medium', 'Roboto Medium', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:500;
   font-style:normal;
   font-size:14px;
   color:#2196F3;
 }
 .raised_button {
-  font-family:'Roboto-Medium', 'Roboto Medium', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:500;
   font-style:normal;
   font-size:14px;
@@ -175,23 +182,23 @@
   text-align:left;
 }
 .box_11 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:400;
   font-style:normal;
   font-size:14px;
 }
 .box_21 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:400;
   font-style:normal;
 }
 .ellipse1 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:400;
   font-style:normal;
 }
 .image1 {
-  font-family:'Roboto-Regular', 'Roboto';
+  font-family:'Roboto Regular', 'Roboto';
   font-weight:400;
   font-style:normal;
 }
@@ -200,7 +207,12 @@
   color:rgba(0, 0, 0, 0.537254901960784);
 }
 .paragraph2 {
-  text-align:left;
+  font-family:'Arial Normal', 'Arial';
+  font-weight:400;
+  font-style:normal;
+  font-size:14px;
+  color:#FFFFFF;
+  text-align:center;
 }
 .heading_12 {
   font-family:'Arial Negreta', 'Arial Normal', 'Arial';
