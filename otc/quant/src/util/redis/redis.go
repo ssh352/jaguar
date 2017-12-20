@@ -152,6 +152,13 @@ func (p *ConnPool) GetHashMapKey(key string, field string) (interface{}, error) 
 	return conn.Do("HGET", key, field)
 }
 
+// SetHashMapKey set hashmap special field
+func (p *ConnPool) SetHashMapKey(key string, field string, val string) (interface{}, error) {
+	conn := p.redisPool.Get()
+	defer conn.Close()
+	return conn.Do("HSET", key, field, val)
+}
+
 // GetAllHashMapString for hash map
 func (p *ConnPool) GetAllHashMapString(key string) (map[string]string, error) {
 	conn := p.redisPool.Get()

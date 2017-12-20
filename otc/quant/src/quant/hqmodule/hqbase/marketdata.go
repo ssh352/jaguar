@@ -33,6 +33,7 @@ type Marketdata struct {
 	Open                float64     // 开盘价
 	High                float64     // 最高价
 	Low                 float64     // 最低价
+	Close               float64     // 昨收
 	Match               float64     // 最新价
 	AskPrice            [10]float64 // 申卖价
 	AskVol              [10]int32   // 申卖量

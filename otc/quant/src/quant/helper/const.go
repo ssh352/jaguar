@@ -4,7 +4,7 @@ const (
 	// QuantConfigFile is the configure file name for quant project
 	QuantConfigFile string = "./conf/quant.ini"
 	// QuantLogConfigFile is the log configure file name for quant project
-	QuantLogConfigFile string = "./conf/quant_log.xml"
+	QuantLogConfigFile string = "./conf/log.xml"
 	// RedisKey is the key stored quote data
 	RedisKey string = "MarketMap_test"
 
@@ -37,4 +37,8 @@ const (
 	ConfigOMSPollTimeOut           string = "rb_pull_time_out"
 	ConfigOMSEntrustUpdateBatchNum string = "entrust_update_batch_num"
 	ConfigOMSTradeInsertBatchNum   string = "trade_insert_batch_num"
+
+	// HQ config define
+	ConfigHQSessionName string = "hqmodule"
+	ConfigHQPublishAddr string = "publish_addr"
 )
