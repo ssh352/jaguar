@@ -1,55 +1,60 @@
 package vss
 
 import (
-	"fmt"
-	"net"
-	"strings"
-	"time"
-
-	"quant/hqmodule/hqbase"
-	"util/redis"
-
-	"quant/hqmodule/marketdata/vss/struc"
-
+	// "fmt"
 	"github.com/Workiva/go-datastructures/queue"
 	log "github.com/thinkboy/log4go"
 	"github.com/vmihailenco/msgpack"
 	"github.com/widuu/goini"
+	"net"
+	"quant/hqmodule/hqbase"
+	"quant/hqmodule/marketdata/vss/struc"
+	"strings"
+	"time"
+	// "util/redis"
 )
 
 var (
-	RedisPool *redis.ConnPool
-	conn      *net.TCPConn
+	// RedisPool *redis.ConnPool
+	conn *net.TCPConn
 )
 
+// InitVss connect to vss
 func InitVss(conf *goini.Config) {
 	header := struc.NewHeader(1, 92)
 	// 初始化vss登录信息
+	SenderCompID := conf.GetValue("hqmodule", "sz_vss_sendercompid")
+	TargetCompID := conf.GetValue("hqmodule", "sz_vss_targetcompid")
+	Password := conf.GetValue("hqmodule", "sz_vss_password")
+	DefaultApplVerID := conf.GetValue("hqmodule", "sz_vss_defaultapplverid")
+
 	var logonInfo = map[string]string{
-		"SenderCompID":     "CS63                ",
-		"TargetCompID":     "GFZB                ",
-		"Password":         "GFZB            ",
-		"DefaultApplVerID": "1.02                            ",
-		// "SenderCompID":     conf.GetValue("hqmodule", "sz_vss_sendercompid"),
-		// "TargetCompID":     conf.GetValue("hqmodule", "sz_vss_targetcompid"),
-		// "Password":         conf.GetValue("hqmodule", "sz_vss_password"),
-		// "DefaultApplVerID": conf.GetValue("hqmodule", "sz_vss_defaultapplverid"),
+		// "SenderCompID":     "CS64#               ",
+		// "TargetCompID":     "GFZB                ",
+		// "Password":         "GFZB            ",
+		// "DefaultApplVerID": "1.02                            ",
+		"SenderCompID":     strings.Replace(SenderCompID, "#", " ", -1),
+		"TargetCompID":     strings.Replace(TargetCompID, "#", " ", -1),
+		"Password":         strings.Replace(Password, "#", " ", -1),
+		"DefaultApplVerID": strings.Replace(DefaultApplVerID, "#", " ", -1),
 	}
-	fmt.Printf("%v\n", logonInfo)
+	log.Info("vss connection params: %v", logonInfo)
 	logon := struc.NewLogon(logonInfo)
 	// 初始化vss服务连接信息
 	var CONN = map[string]string{
 		"host":     conf.GetValue("hqmodule", "sz_vss_vsshost"),
 		"protocol": conf.GetValue("hqmodule", "sz_vss_conntype"),
 	}
-	fmt.Printf("%v\n", CONN)
+	log.Info("%v", CONN)
 	// 获取vss服务连接
 	var err error
 	conn, err = login(logon, header, CONN)
-	checkError(err)
+	if err != nil {
+		log.Error(err)
+	}
 }
 
-// 心跳
+// Heartbeat 心跳
 func Heartbeat() {
 	var err error
 	header := struc.NewHeader(3, 0)
@@ -60,7 +65,7 @@ func Heartbeat() {
 	sendmsg := make([]byte, heartbeatmsglen)
 	copy(sendmsg, header.Marshal())
 	copy(sendmsg[8:], ck(sendmsg[:8]))
-	log.Info("heartbeatmsg %v\n", sendmsg)
+	// log.Info("heartbeatmsg %v\n", sendmsg)
 	for {
 		time.Sleep(time.Second * time.Duration(60))
 		_, err = conn.Write(sendmsg) //发送HTTP请求头
@@ -68,15 +73,16 @@ func Heartbeat() {
 			log.Error("%v\n", err)
 		}
 	}
-
 }
 
-// 接收数据，并处理
-func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb *queue.RingBuffer) {
+// ReceiveMarketData 接收数据，并处理
+func ReceiveMarketData(redisChan chan []byte, rb *queue.RingBuffer, mysqlRb *queue.RingBuffer) {
+	//func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb *queue.RingBuffer) {
 	headerlen := uint(8) // 消息头长度
 	tailerlen := uint(4) // 消息尾长度
+	offset := uint(0)
 	for {
-		offset := uint(0)
+		offset = 0
 		headermsg := make([]byte, headerlen)
 		for {
 			if offset < headerlen {
@@ -117,7 +123,7 @@ func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb 
 		cksum := ck(headerandbody)
 		for i := uint(0); i < tailerlen; i++ {
 			if tailmsg[i] != cksum[i] {
-				log.Error("cksum error!!!!!\n")
+				log.Error("cksum error!!!!!")
 				break
 			}
 		}
@@ -128,7 +134,6 @@ func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb 
 		 */
 		bodyTotalLen := 1 + len(bodymsg) + 1 + 1
 		mk := make([]byte, bodyTotalLen)
-		//log.Info("bodymsg:%v\n", bodymsg)
 
 		switch msgtype {
 		case 390019:
@@ -155,11 +160,13 @@ func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb 
 			mkd := parseMarketData(mk)
 			md, err := msgpack.Marshal(&mkd)
 			if err != nil {
-				panic(err)
+				log.Error(err)
+			} else {
+				redisChan <- md
+				//				redisRb.Put(md)
+				rb.Put(md)
+				// mysqlRb.Put(mkd)
 			}
-			redisRb.Put(md)
-			rb.Put(md)
-			mysqlRb.Put(mkd)
 		case 300611:
 			//log.Info("300611 盘后定价交易业务行情快照\n")
 			//	securityid := bodymsg[13:21]
@@ -178,11 +185,13 @@ func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb 
 			mkd := parseMarketData(mk)
 			md, err := msgpack.Marshal(&mkd)
 			if err != nil {
-				panic(err)
+				log.Error(err)
+			} else {
+				redisChan <- md
+				//redisRb.Put(md)
+				rb.Put(md)
+				// mysqlRb.Put(mkd)
 			}
-			redisRb.Put(md)
-			rb.Put(md)
-			mysqlRb.Put(mkd)
 		case 306311:
 			//log.Info("306311 港股实时行情快照\n")
 		case 309011:
@@ -203,11 +212,13 @@ func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb 
 			mkd := parseMarketData(mk)
 			md, err := msgpack.Marshal(&mkd)
 			if err != nil {
-				panic(err)
+				log.Error(err)
+			} else {
+				redisChan <- md
+				//				redisRb.Put(md)
+				rb.Put(md)
+				// mysqlRb.Put(mkd)
 			}
-			redisRb.Put(md)
-			rb.Put(md)
-			mysqlRb.Put(mkd)
 		case 309111:
 			//log.Info("309111 成交量统计指标行情\n")
 		case 300192:
@@ -226,7 +237,6 @@ func ReceiveMarketData(redisRb *queue.RingBuffer, rb *queue.RingBuffer, mysqlRb 
 			//log.Info("%d wtf!!!\n", msgtype)
 		}
 	}
-
 }
 
 // 登录vss服务
@@ -240,71 +250,70 @@ func login(logon *struc.Logon, header *struc.Header, CONN map[string]string) (*n
 	copy(sendmsg[8:], logon.Marshal())
 	copy(sendmsg[100:], ck(sendmsg[:100]))
 
-	log.Info("host:%s, proto:%s\n", CONN["host"], CONN["protocol"])
+	log.Info("host:%s, proto:%s", CONN["host"], CONN["protocol"])
 	tcpAddr, err := net.ResolveTCPAddr(CONN["protocol"], CONN["host"]) //获取一个TCP地址信息,TCPAddr
 	if err != nil {
-		log.Info("Fatal error: %s\n", err.Error())
+		log.Error("Fatal error: %s", err.Error())
 		return nil, err
 	}
 	conn, err := net.DialTCP("tcp", nil, tcpAddr) //创建一个TCP连接:TCPConn
 	if err != nil {
-		log.Info("Fatal error: %s\n", err.Error())
+		log.Error("Fatal error: %s", err.Error())
 		return nil, err
 	}
 	_, err = conn.Write(sendmsg) //发送HTTP请求头
 	if err != nil {
-		log.Info("Fatal error: %s\n", err.Error())
+		log.Error("Fatal error: %s", err.Error())
 		return nil, err
 	}
 	result := make([]byte, logonmsglen)
 	llen, err := conn.Read(result)
 	if err != nil {
-		log.Info("3 登陆网关失败 %d\n", llen)
+		log.Error("3 登陆网关失败 %d", llen)
 		return nil, err
 	}
-	log.Info("llen %d\n", llen)
-	log.Info("%v\n", result)
+
 	if llen > 0 {
 		if result[3] == 1 {
-			log.Info("登陆网关成功\n")
+			log.Info("登陆网关成功")
 		} else {
-			log.Info("1 登陆网关失败 %s %v\n", result[3], result[3])
+			log.Info("1 登陆网关失败 %s %v", result[3], result[3])
 		}
 	} else {
-		log.Info("2 登陆网关失败 %d %v\n", result[3], result[3])
+		log.Info("2 登陆网关失败 %d %v", result[3], result[3])
 	}
 	return conn, nil
 }
 
 // 查询redis行情，并解析
-func queryRedis(codes string) {
-	codelist := strings.Split(codes, ",")
-	md, err := RedisPool.GetMHashMapString("MarketMap_test", codelist)
-	//	md, err := RedisPool.GetAllHashMapString("MarketMap_test")
-	if err != nil {
-		log.Error("QueryStock ", err)
-	}
-	//	log.Info("md:%v\n", md)
-	var mkd hqbase.Marketdata
-	for i := 0; i < len(md); i++ {
-		log.Info("反序列化redis数据库二进制数据！")
-		data := md[i]
-		bodymsg := []byte(data)
-		mkd = parseMarketData(bodymsg)
-		b, err := msgpack.Marshal(&mkd)
-		if err != nil {
-			panic(err)
-		}
-		log.Info("=========msgpack.b:%v\n", b)
-		var marketd hqbase.Marketdata
-		err = msgpack.Unmarshal(b, &marketd)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Printf("marketd:%+v\n", marketd)
-		log.Info("mkd:%+v\n", mkd)
-	}
-}
+// func queryRedis(codes string) {
+// 	codelist := strings.Split(codes, ",")
+// 	md, err := RedisPool.GetMHashMapString("MarketMap_test", codelist)
+// 	//	md, err := RedisPool.GetAllHashMapString("MarketMap_test")
+// 	if err != nil {
+// 		log.Error("QueryStock ", err)
+// 	}
+// 	//	log.Info("md:%v\n", md)
+// 	var mkd hqbase.Marketdata
+// 	for i := 0; i < len(md); i++ {
+// 		log.Info("反序列化redis数据库二进制数据！")
+// 		data := md[i]
+// 		bodymsg := []byte(data)
+// 		mkd = parseMarketData(bodymsg)
+// 		b, err := msgpack.Marshal(&mkd)
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 		log.Info("=========msgpack.b:%v\n", b)
+// 		var marketd hqbase.Marketdata
+// 		err = msgpack.Unmarshal(b, &marketd)
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 		fmt.Printf("marketd:%+v\n", marketd)
+// 		log.Info("mkd:%+v\n", mkd)
+// 	}
+// }
 
 func parseMarketData(bodymsg []byte) hqbase.Marketdata {
 	var mkd hqbase.Marketdata
@@ -565,11 +574,4 @@ func bytestoint(data []byte) (x1 uint) {
 		}
 	}
 	return
-}
-
-func checkError(err error) {
-	if err != nil {
-		log.Error("Fatal error: %s\n", err.Error())
-		panic(err)
-	}
 }
