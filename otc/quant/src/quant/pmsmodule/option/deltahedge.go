@@ -95,16 +95,16 @@ func (dh *deltaHedge) Run(waitchan chan int) {
 			log.Info("timestamp:%d %+v", time.Now().UnixNano()/1e6, err.Error())
 		} else {
 			log.Info("timestamp:%d %+v", time.Now().UnixNano()/1e6, mkdat)
-			// if signal := dh.calcSignal(mkdat.Match); signal != emsbase.DoNothing {
-			// 	dh.generatePortfolio(signal, &mkdat)
-			// 	dh.base.Trade()
-			// 	dat, err1 := dh.base.OmsModuleSub.RecvMessage(0)
-			// 	if err1 != nil {
-			// 		log.Error("DeltaHedge omsModuleSub receive data error: %s", err1.Error())
-			// 	} else {
-			// 		log.Info("%v", dat)
-			// 	}
-			// }
+			if signal := dh.calcSignal(mkdat.Match); signal != emsbase.DoNothing {
+				dh.generatePortfolio(signal, &mkdat)
+				dh.base.Trade()
+				dat, err1 := dh.base.OmsModuleSub.RecvMessage(0)
+				if err1 != nil {
+					log.Error("DeltaHedge omsModuleSub receive data error: %s", err1.Error())
+				} else {
+					log.Info("%v", dat)
+				}
+			}
 		}
 	}
 

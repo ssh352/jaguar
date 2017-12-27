@@ -29,10 +29,6 @@ func InitVss(conf *goini.Config) {
 	DefaultApplVerID := conf.GetValue("hqmodule", "sz_vss_defaultapplverid")
 
 	var logonInfo = map[string]string{
-		// "SenderCompID":     "CS64#               ",
-		// "TargetCompID":     "GFZB                ",
-		// "Password":         "GFZB            ",
-		// "DefaultApplVerID": "1.02                            ",
 		"SenderCompID":     strings.Replace(SenderCompID, "#", " ", -1),
 		"TargetCompID":     strings.Replace(TargetCompID, "#", " ", -1),
 		"Password":         strings.Replace(Password, "#", " ", -1),
