@@ -55,9 +55,9 @@ func (c *common) trade(p emsbase.Portfolio) error {
 func (c *common) checkPortStatus(TacticID string) {
 	if reffs, ok := c.tradeingStrategy[TacticID]; ok {
 		for _, thirdreff := range reffs {
-			r := helper.Request{From: "EMS",
-				To:  "OMS",
-				Cmd: "GetEntrust"}
+			r := helper.Request{FROM: "EMS",
+				TO:  "OMS",
+				CMD: "GetEntrust"}
 			r.Params = append(r.Params, thirdreff)
 			e := c.GetEntrust(r)
 			log.Info("%v", e)

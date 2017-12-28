@@ -27,12 +27,15 @@ func (s *service) init() {
 	log.Info("OMS Service bind %s", s.repAddr)
 }
 
-func (s *service) HandleReq(req csp.Request) csp.Response {
-	rep := csp.Response{}
-	thirdreff := req.Params[0]
+func (s *service) HandleReq(req csp.Request) (rep csp.Response) {
+	thirdreff := req.PARAMS[0]
 	if e, ok := cachedEntrust[thirdreff]; ok {
 		msg, _ := msgpack.Marshal(e)
-		rep.Dat = append(rep.Dat, msg)
+		rep.DAT = msg
 	}
 	return rep
+}
+
+func (s *service) HandleBReq(breq []byte) (brep []byte) {
+	return
 }

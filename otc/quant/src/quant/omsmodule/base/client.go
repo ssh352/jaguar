@@ -29,7 +29,12 @@ func (c *Client) init() {
 	log.Info("OMS client connect to %s.", c.reqAddr)
 }
 
-// GetEntrust retrun entrust from cached entrust
-func (c *Client) GetEntrust(rq csp.Request) (rep csp.Response) {
+// Request send req to server
+func (c *Client) Request(rq csp.Request) (rep csp.Response) {
 	return c.reqC.Request(rq)
+}
+
+// RequestB send req to server
+func (c *Client) RequestB(rq []byte) (rep []byte) {
+	return c.reqC.RequestB(rq)
 }
