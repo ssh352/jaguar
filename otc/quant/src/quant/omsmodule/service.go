@@ -17,14 +17,13 @@ func newService() *service {
 type service struct {
 	conf    *goini.Config
 	repAddr string
-	ser     *csp.ServiceRep
 }
 
 func (s *service) init() {
 	log.Info("Oms Service init")
 	s.conf = goini.SetConfig(helper.QuantConfigFile)
 	s.repAddr = s.conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSReqAddr)
-	s.ser = csp.NewRepService(s.repAddr, s)
+	csp.NewRepService(s.repAddr, s)
 	log.Info("Oms Service bind %s", s.repAddr)
 }
 
