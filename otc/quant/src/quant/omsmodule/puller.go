@@ -45,7 +45,7 @@ func (p *puller) init() {
 }
 
 func (p *puller) listenOrder() {
-	log.Info("OMS listen to: %s", p.pullAddr)
+	log.Info("OMS listen to: %s, waiting for entrust & order response", p.pullAddr)
 	var err error
 	p.pull, err = zmq.NewSocket(zmq.PULL)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"github.com/widuu/goini"
 	emsbase "quant/emsmodule/base"
 	"quant/helper"
+	"time"
 )
 
 var (
@@ -13,23 +14,18 @@ var (
 )
 
 func init() {
+	logfiles := make(map[string]string)
+	logfiles["ERROR"] = "omsmodule_err%s.log" + time.Now().Format("2006-01-02")
+	logfiles["INFO"] = "omsmodule_info%s.log" + time.Now().Format("2006-01-02")
+	log.SetLogFiles(logfiles)
 	log.LoadConfiguration(helper.QuantLogConfigFile)
 }
 
 func main() {
 
 	p := newPuller()
-	sr := newService()
-
-	chs := make([]chan int, 2)
-	for i := 0; i < 2; i++ {
-		chs[i] = make(chan int)
-	}
-
-	go p.pullOrderResp(chs[0])
-	go sr.run(chs[1])
-
-	for _, ch := range chs {
-		<-ch
-	}
+	newService()
+	ch := make(chan int)
+	go p.pullOrderResp(ch)
+	<-ch
 }

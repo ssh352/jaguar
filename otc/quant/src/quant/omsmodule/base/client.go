@@ -34,8 +34,7 @@ func (c *Client) init() {
 // GetEntrust retrun entrust from cached entrust
 func (c *Client) GetEntrust(rq helper.Request) (entrust emsbase.EntrustPushResp) {
 	brq, _ := msgpack.Marshal(rq)
-	log.Info(string(brq))
-
+	// log.Info(string(brq))
 	c.req.SendBytes(brq, 0)
 	resp, _ := c.req.RecvBytes(0)
 	msgpack.Unmarshal(resp, &entrust)
