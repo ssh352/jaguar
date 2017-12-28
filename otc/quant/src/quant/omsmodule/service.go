@@ -20,11 +20,11 @@ type service struct {
 }
 
 func (s *service) init() {
-	log.Info("Oms Service init")
+	log.Info("OMS Service init")
 	s.conf = goini.SetConfig(helper.QuantConfigFile)
 	s.repAddr = s.conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSReqAddr)
 	csp.NewRepService(s.repAddr, s)
-	log.Info("Oms Service bind %s", s.repAddr)
+	log.Info("OMS Service bind %s", s.repAddr)
 }
 
 func (s *service) HandleReq(req csp.Request) csp.Response {
