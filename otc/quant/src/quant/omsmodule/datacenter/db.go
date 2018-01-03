@@ -11,13 +11,13 @@ import (
 )
 
 const (
-	insertEntrustSQL string = "INSERT INTO jqorder(tactic_id,tactic_type,strategy_name, " +
+	insertEntrustSQL string = "INSERT INTO jgorder(tactic_id,tactic_type,strategy_name, " +
 		"prodid,account_code,combi_no,entrust_amount,entrust_direction,entrust_price,market_no, " +
 		"price_type,stock_code,stockholder_id,insert_date,insert_time,third_reff,unix_time,capital_type,remark) " +
 		"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-	updateEntrustSQL        string = "update jqorder set operator_no = ?, business_date = ?, business_time = ?, entrust_no = ?, entrust_price = ?, entrust_status = ?, invest_type= ?, price_type = ?, report_no = ?, report_seat = ?, stockholder_id = ? where third_reff = ?"
-	updateEntrustByTradeSQL string = "update jqorder set entrust_status = ?, deal_amount = ?, deal_balance = ?, deal_price = ? where third_reff = ?"
-	insertTradeSQL          string = "insert into jqtrade(account_code,batch_no,cancel_amount,combi_no,deal_amount,deal_balance,deal_date,deal_fee,deal_no,deal_price,deal_time,entrust_amount,entrust_direction,entrust_no,entrust_status,extsystem_id,futures_direction,market_no,operator_no,report_direction,report_seat,stock_code,stockholder_id,third_reff,total_deal_amount,total_deal_balance) " +
+	updateEntrustSQL        string = "update jgorder set operator_no = ?, business_date = ?, business_time = ?, entrust_no = ?, entrust_price = ?, entrust_status = ?, invest_type= ?, price_type = ?, report_no = ?, report_seat = ?, stockholder_id = ? where third_reff = ?"
+	updateEntrustByTradeSQL string = "update jgorder set entrust_status = ?, deal_amount = ?, deal_balance = ?, deal_price = ? where third_reff = ?"
+	insertTradeSQL          string = "insert into jgtrade(account_code,batch_no,cancel_amount,combi_no,deal_amount,deal_balance,deal_date,deal_fee,deal_no,deal_price,deal_time,entrust_amount,entrust_direction,entrust_no,entrust_status,extsystem_id,futures_direction,market_no,operator_no,report_direction,report_seat,stock_code,stockholder_id,third_reff,total_deal_amount,total_deal_balance) " +
 		"values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
