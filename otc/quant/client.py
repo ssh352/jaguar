@@ -11,12 +11,43 @@ ctx = zmq.Context.instance()
 req = ctx.socket(zmq.REQ)
 req.connect(url)
 
-# newStrategy
-r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'newStrategy'}
-params = ["DeltaHedge", "0.1", "0.003", "1000000", "000333.SZ", "UFX", "1007", "10072"]
-r['PARAMS'] = params
+
+
+# getStrategyInfo
+r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'getStrategyInfo'}
 req.send(msgpack.packb(r))
 msgpack.unpackb(req.recv())
+
+# newStrategyBatch
+# r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'newStrategyBatch'}
+# s1config = ["DeltaHedge", "0.1", "0.003", "1000000", "000333.SZ", "UFX", "1007", "10072"]
+# s2config = ["DeltaHedge", "0.1", "0.003", "1000000", "000001.SZ", "UFX", "1007", "10072"]
+# s3config = ["DeltaHedge", "0.1", "0.003", "1000000", "600000.SH", "UFX", "1007", "10072"]
+# r['PARAMS'] = [msgpack.packb(s1config), msgpack.packb(s2config), msgpack.packb(s3config)]
+# req.send(msgpack.packb(r))
+# msgpack.unpackb(req.recv())
+
+# newStrategy
+# r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'newStrategy'}
+# params = ["DeltaHedge", "0.1", "0.003", "1000000", "000333.SZ", "UFX", "1007", "10072"]
+# r['PARAMS'] = params
+# req.send(msgpack.packb(r))
+# msgpack.unpackb(req.recv())
+
+
+# getStrategyTemp
+# r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'getStrategyTemp'}
+# req.send(msgpack.packb(r))
+# msgpack.unpackb(req.recv())
+
+
+
+# stopStrategy
+# r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'stopStrategy'}
+# params = ["DeltaHedge_1007_000333.SZ"]
+# r['PARAMS'] = params
+# req.send(msgpack.packb(r))
+# msgpack.unpackb(req.recv())
 
 
 # delRiskRules

@@ -5,7 +5,7 @@ import (
 	log "github.com/thinkboy/log4go"
 	"github.com/vmihailenco/msgpack"
 	"github.com/widuu/goini"
-	hqbase "quant/hqmodule/hqbase"
+	"quant/hqmodule/base"
 	redis "util/redis"
 )
 

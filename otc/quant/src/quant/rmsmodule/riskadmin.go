@@ -204,6 +204,7 @@ func (r *riskAdmin) delRiskRules(req *csp.Request) (rep csp.Response) {
 
 	return
 }
+
 func (r *riskAdmin) modifyRiskRules(req *csp.Request) (rep csp.Response) {
 	csp.SetRepV(req, &rep)
 

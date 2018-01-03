@@ -3,10 +3,8 @@ package option
 import (
 	"fmt"
 	log "github.com/thinkboy/log4go"
-	// "github.com/widuu/goini"
-	// "github.com/vmihailenco/msgpack"
-	emsbase "quant/emsmodule/base"
-	"quant/hqmodule/hqbase"
+	"quant/emsmodule/base"
+	"quant/hqmodule/base"
 	"quant/pmsmodule/base"
 	"strconv"
 	"time"
@@ -64,17 +62,6 @@ type deltaHedge struct {
 }
 
 func (dh *deltaHedge) SInit() {
-	// dh.conf = goini.SetConfig("./conf/strategy/s_deltahedge.ini")
-
-	// dh.RiskAversionRation = dh.conf.GetFloat64("deltahedge", "risk_aversion_ratio")
-	// dh.TradeCost = dh.conf.GetFloat64("deltahedge", "trade_fee")
-	// dh.NotionalPrincipal = dh.conf.GetFloat64("deltahedge", "notional_principal")
-
-	// dh.SubQuoteCodes = dh.conf.GetStr("deltahedge", "subcode")
-	// dh.AdapterName = dh.conf.GetStr("deltahedge", "adaptername")
-	// dh.AccountID = dh.conf.GetStr("deltahedge", "account_code")
-	// dh.CombiNo = dh.conf.GetStr("deltahedge", "comi_no")
-
 	dh.OMSSubTopic = dh.AccountID
 	dh.S = dh
 	dh.Init()
