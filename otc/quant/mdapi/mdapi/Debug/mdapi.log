@@ -1,7 +1,0 @@
-﻿  stdafx.cpp
-  mdapi.cpp
-  mdspi.cpp
-  正在生成代码...
-mdspi.obj : warning LNK4075: 忽略“/EDITANDCONTINUE”(由于“/SAFESEH”规范)
-  mdapi.vcxproj -> E:\quant\mdapi\mdapi\bin\mdapi.exe
-  已复制         1 个文件。

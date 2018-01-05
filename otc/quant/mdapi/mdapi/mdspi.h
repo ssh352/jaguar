@@ -37,8 +37,7 @@ public:
 	virtual void OnRtnDepthMarketData(CThostFtdcDepthMarketDataField *pDepthMarketData);
 
 private:
-	void ReqUserLogin();
-	void SubscribeMarketData();
-	// 
+	void ReqUserLogin(TThostFtdcBrokerIDType, TThostFtdcInvestorIDType, TThostFtdcPasswordType, int );
+	void SubscribeMarketData(char**, int);
 	bool IsErrorRspInfo(CThostFtdcRspInfoField *pRspInfo);
 };
