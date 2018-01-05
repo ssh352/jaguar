@@ -1,0 +1,7 @@
+﻿  stdafx.cpp
+  mdspi.cpp
+  mdapi.cpp
+  正在生成代码...
+mdapi.obj : error LNK2019: 无法解析的外部符号 "public: static class CThostFtdcMdApi * __cdecl CThostFtdcMdApi::CreateFtdcMdApi(char const *,bool)" (?CreateFtdcMdApi@CThostFtdcMdApi@@SAPEAV1@PEBD_N@Z)，该符号在函数 main 中被引用
+ThostTraderApi\thostmduserapi.lib : warning LNK4272: 库计算机类型“x86”与目标计算机类型“x64”冲突
+E:\quant\mdapi\x64\Debug\mdapi.exe : fatal error LNK1120: 1 个无法解析的外部命令
