@@ -1,0 +1,34 @@
+
+twap交易逻辑
+	以买为例
+	交易时长：			T分钟
+	目标委托量：		VOL股
+	对手盘五档总量：	AV = askvol1 + askvol2 + askvol3 + askvol4 + askvol5
+	下单量盘口比率：	r（0.5）
+	交易单元时长：		S秒（16）
+	交易单元个数：		N = T*60/S
+	委托等待成交时长：	ws1秒（1）
+	补单等待成交时长：	ws2秒（1）
+	追单上浮：			pct（0.02）
+	补单次数上线：		n（3）
+	
+一个交易单元交易过程：
+IF VOL/N <= AV*r THEN
+	以 AskPrice5 下 VOL/N
+ELIF VOL/N > AV*r AND VOL/2N <= AV*r
+	以 AskPrice5 下 VOL/2N
+ELIF VOL/2N > AV*r AND VOL/4N <= AV*r
+	以 AskPrice5 下 VOL/4N
+ELIF VOL/4N > AV*r AND VOL/8N <= AV*r
+	以 AskPrice5 下 VOL/8N
+ELSE
+	以 AskPrice5 下 AV
+
+WAIT FOR ws1 seconds
+
+WHILE (NOT ALL TRADED) AND i<=n THEN
+	以 AskPrice1 * (1+pct) 下 UnFilled VOL
+	i++
+	WAIT FOR ws2 seconds
+	
+PS: 委托价格需与涨停价取孰小
