@@ -7,7 +7,6 @@ import (
 	log "github.com/thinkboy/log4go"
 	"github.com/vmihailenco/msgpack"
 	"github.com/widuu/goini"
-	emsbase "quant/emsmodule/base"
 	"quant/helper"
 	"quant/rmsmodule/base"
 	"strconv"
@@ -24,7 +23,10 @@ const (
 	delrulesql     string = "delete from jgriskrule where ID = '%s'"
 )
 
-type riskNoRep struct{ ID string }
+var (
+	riskfuncrouter = make(map[string]func(*csp.Request) csp.Response)
+	riskrules      = make(map[string]rmsbase.RiskRule)
+)
 
 func getRiskNo() string {
 	var NO int
@@ -52,6 +54,20 @@ func (r *riskAdmin) init() {
 	r.connectdb()
 	r.cacheRiskRules()
 	r.connectToPublisher()
+
+	// Create Rep Server
+	r.setRouteMap()
+	newService()
+}
+
+func (r *riskAdmin) setRouteMap() {
+	riskfuncrouter["getTradePct"] = r.getTradePct
+	riskfuncrouter["getEntrustAmountInfo"] = r.getEntrustAmountInfo
+	riskfuncrouter["getRiskRules"] = r.getRiskRules
+	riskfuncrouter["modifyRiskRules"] = r.modifyRiskRules
+	riskfuncrouter["delRiskRules"] = r.delRiskRules
+	riskfuncrouter["addRiskRules"] = r.addRiskRules
+	riskfuncrouter["checkPort"] = r.checkPort
 }
 
 func (r *riskAdmin) connectToPublisher() {
@@ -173,7 +189,7 @@ func (r *riskAdmin) addRiskRules(req *csp.Request) (rep csp.Response) {
 	r.push.SendBytes(bdat, 1)
 
 	// return risk ID
-	rep.DAT, _ = msgpack.Marshal(riskNoRep{ID: rule.ID})
+	rep.DAT, _ = msgpack.Marshal(rmsbase.RiskNoRep{ID: rule.ID})
 	return
 }
 
@@ -197,7 +213,7 @@ func (r *riskAdmin) delRiskRules(req *csp.Request) (rep csp.Response) {
 	delete(riskrules, req.PARAMS[0])
 
 	// push deleted riskrule  ID to MsgRouter
-	delID, _ := msgpack.Marshal(riskNoRep{ID: req.PARAMS[0]})
+	delID, _ := msgpack.Marshal(rmsbase.RiskNoRep{ID: req.PARAMS[0]})
 	bdat, _ := msgpack.Marshal(csp.PubMsg{Topic: "delRiskRules", Msg: delID})
 	log.Info("delRiskRules pub %s", string(bdat))
 	r.push.SendBytes(bdat, 1)
@@ -270,7 +286,7 @@ func (r *riskAdmin) getTradePct(req *csp.Request) (rep csp.Response) {
 	return
 }
 
-// CheckPort is used by EMSModule when an execution order passed by
-func CheckPort(*emsbase.Portfolio) (bool, error) {
-	return true, nil
+func (r *riskAdmin) checkPort(req *csp.Request) (rep csp.Response) {
+	csp.SetRepV(req, &rep)
+	return
 }

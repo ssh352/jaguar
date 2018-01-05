@@ -1,5 +1,4 @@
 
-
 # pip install msgpack-python
 import zmq
 import time
@@ -12,11 +11,10 @@ req = ctx.socket(zmq.REQ)
 req.connect(url)
 
 
-
 # getStrategyInfo
-r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'getStrategyInfo'}
-req.send(msgpack.packb(r))
-msgpack.unpackb(req.recv())
+# r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'getStrategyInfo'}
+# req.send(msgpack.packb(r))
+# msgpack.unpackb(req.recv())
 
 # newStrategyBatch
 # r = {'TO': 'PMS', 'FROM': 'MONITOR', 'CMD': 'newStrategyBatch'}
@@ -59,7 +57,7 @@ msgpack.unpackb(req.recv())
 
 # modifyRiskRules
 # r = {'TO': 'RMS', 'FROM': 'MONITOR', 'CMD': 'modifyRiskRules'}
-# params = ["INSTRUMENTID","000334.SZ","10072","DeltaHedge","trade_pct_vol_30","greater","0.25","1","operator01", "", "R0003"]
+# params = ["INSTRUMENTID","000334.SZ","10072","DeltaHedge","trade_pct_vol_30","greater","0.25","1","operator01", "", "R0035"]
 # r['PARAMS'] = params
 # req.send(msgpack.packb(r))
 # msgpack.unpackb(req.recv())
@@ -70,7 +68,6 @@ msgpack.unpackb(req.recv())
 # r['PARAMS'] = params
 # req.send(msgpack.packb(r))
 # msgpack.unpackb(req.recv())
-
 
 # getRiskRules
 # req.send(msgpack.packb({'TO': 'RMS', 'FROM': 'MONITOR', 'CMD': 'getRiskRules'}))

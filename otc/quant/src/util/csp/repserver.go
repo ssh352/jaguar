@@ -2,7 +2,8 @@ package csp
 
 import (
 	zmq "github.com/pebbe/zmq3"
-	"github.com/vmihailenco/msgpack"
+	log "github.com/thinkboy/log4go"
+	// "github.com/vmihailenco/msgpack"
 )
 
 func NewRepService(url string, handle IHandleMsg) *RepService {
@@ -15,18 +16,12 @@ func NewRepService(url string, handle IHandleMsg) *RepService {
 type RepService struct {
 	URL     string
 	Handle  IHandleMsg
-	Unpack  bool
 	rep     *zmq.Socket
 	running bool
 }
 
-func (s *RepService) SetUnPack(unpack bool) {
-	s.Unpack = unpack
-}
-
 func (s *RepService) init() {
 	s.running = false
-	s.Unpack = true
 	s.bind()
 	go s.run()
 }
@@ -40,6 +35,7 @@ func (s *RepService) bind() {
 	s.rep.Bind(s.URL)
 }
 
+// Stop quit run function
 func (s *RepService) Stop() {
 	s.running = false
 }
@@ -47,12 +43,8 @@ func (s *RepService) Stop() {
 func (s *RepService) run() {
 	s.running = true
 	for s.running {
-		msg, _ := s.rep.RecvBytes(0)
-		if s.Unpack {
-			var req Request
-			_ = msgpack.Unmarshal(msg, &req)
-			msg, _ = msgpack.Marshal(s.Handle.HandleReq(req))
-			s.rep.SendBytes(msg, 0)
+		if msg, err := s.rep.RecvBytes(0); err != nil {
+			log.Error("RepServer: %s", err.Error())
 		} else {
 			s.rep.SendBytes(s.Handle.HandleBReq(msg), 0)
 		}

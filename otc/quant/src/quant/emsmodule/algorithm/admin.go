@@ -7,7 +7,6 @@ import (
 	"quant/emsmodule/adapter/ufxapi"
 	emsbase "quant/emsmodule/base"
 	"quant/helper"
-	omsbase "quant/omsmodule/base"
 	"strings"
 	"time"
 )
@@ -15,13 +14,14 @@ import (
 var (
 	adaptersMap  = make(map[string]emsbase.ITarde)
 	algorithmMap = make(map[string]iAlgotithm)
-	entrusts     = make(map[string]emsbase.StrategyEntrust, 10000)
+	entrusts     = make(map[string]*emsbase.StrategyEntrust, 10000)
+	excetions    = make(map[string]*emsbase.ExecutionOrder, 10000)
 )
 
 // NewCommon  is used for create common algorithm pointer.
 func newCommon() iAlgotithm {
 	log.Info("EMS new common algorithm.")
-	common := common{Client: omsbase.NewClient()}
+	common := common{}
 	common.init()
 	return &common
 }

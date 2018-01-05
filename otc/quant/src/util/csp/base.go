@@ -20,14 +20,14 @@ type Response struct {
 
 // IHandleMsg the interface used to deal with request, service should implement this interface
 type IHandleMsg interface {
-	HandleReq(Request) Response // deal with request
-	HandleBReq([]byte) []byte
+	// HandleReq(Request) Response // deal with request
+	HandleBReq([]byte) []byte // deal with request
 }
 
 // IRequestMsg the interface used to send request to service, client should implement this interface
 type IRequestMsg interface {
-	Request(Request) Response // send request to service
-	RequestB([]byte) []byte
+	// Request(Request) Response // send request to service
+	RequestB([]byte) []byte // send request to service
 }
 
 // SetRepV set response field value by req

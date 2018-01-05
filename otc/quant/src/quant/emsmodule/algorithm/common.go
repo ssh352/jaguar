@@ -3,22 +3,27 @@ package algorithm
 import (
 	"fmt"
 	log "github.com/thinkboy/log4go"
+	"github.com/vmihailenco/msgpack"
+	"github.com/widuu/goini"
 	emsbase "quant/emsmodule/base"
 	"quant/helper"
-	omsbase "quant/omsmodule/base"
+	// omsbase "quant/omsmodule/base"
 	"strconv"
 	// "time"
+	"util/csp"
 )
 
 // Common algorithm trade.
 type common struct {
-	*omsbase.Client
+	omsclient        *csp.ReqClient
 	tradeingStrategy map[string][]string
 }
 
 func (c *common) init() {
 	// TacticID->(thirdreff1,thirdreff2,...,thirdreffn)
 	c.tradeingStrategy = make(map[string][]string, 100)
+	conf := goini.SetConfig(helper.QuantConfigFile)
+	c.omsclient = csp.NewReqClient(conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSReqAddr))
 }
 
 // Trade is called by algorithmadmin.go.
@@ -41,7 +46,7 @@ func (c *common) trade(p emsbase.Portfolio) error {
 			}
 			thirdreff := strconv.FormatInt(e.ID, 10)
 			thirdreffs = append(thirdreffs, thirdreff)
-			entrusts[thirdreff] = emsbase.StrategyEntrust{StrategyInfo: p.StrategyInfo, ProductInfo: p.ProductInfo}
+			entrusts[thirdreff] = &emsbase.StrategyEntrust{StrategyInfo: p.StrategyInfo, ProductInfo: p.ProductInfo}
 			itrade.LimitEntrust(e, p.AccountID, p.CombiNo)
 		} else {
 			return fmt.Errorf("Common algorithm can't find \"%s\" trade adapter", p.AdapterName)
@@ -55,14 +60,20 @@ func (c *common) trade(p emsbase.Portfolio) error {
 func (c *common) checkPortStatus(TacticID string) {
 	if reffs, ok := c.tradeingStrategy[TacticID]; ok {
 		for _, thirdreff := range reffs {
-			r := helper.Request{FROM: "EMS",
+			r := csp.Request{FROM: "EMS",
 				TO:  "OMS",
 				CMD: "GetEntrust"}
-			r.Params = append(r.Params, thirdreff)
-			e := c.GetEntrust(r)
-			log.Info("%v", e)
+			r.PARAMS = append(r.PARAMS, thirdreff)
+			req, _ := msgpack.Marshal(r)
+			p := c.omsclient.RequestB(req)
+			var rep csp.Response
+			err := msgpack.Unmarshal(p, &rep)
+			if err != nil {
+				log.Error("Common algorithm unmarshal failed. %s", err)
+				return
+			}
 			if se, ok := entrusts[thirdreff]; ok {
-				se.Entrust = e
+				msgpack.Unmarshal(rep.DAT, &se.Entrust)
 			}
 		}
 	} else {

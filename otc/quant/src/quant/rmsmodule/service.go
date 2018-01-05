@@ -27,19 +27,6 @@ func (s *service) init() {
 	log.Info("RMS Service bind %s", s.repAddr)
 }
 
-func (s *service) HandleReq(req csp.Request) (rep csp.Response) {
-	if handle, ok := riskfuncrouter[req.CMD]; ok {
-		rep = handle(&req)
-	} else {
-		csp.SetRepV(&req, &rep)
-		errmsg := "RMS Service can't router to '" + req.CMD + "' cmd"
-		rep.MSG = errmsg
-		rep.RET = -1
-		log.Error(errmsg)
-	}
-	return
-}
-
 func (s *service) HandleBReq(breq []byte) (brep []byte) {
 	var req csp.Request
 	msgpack.Unmarshal(breq, &req)

@@ -11,6 +11,7 @@ import (
 	"util/csp"
 )
 
+// NewMsgRouter create *MsgRouter
 func NewMsgRouter() *MsgRouter {
 	mr := MsgRouter{}
 	mr.init()
@@ -18,6 +19,7 @@ func NewMsgRouter() *MsgRouter {
 	return &mr
 }
 
+// MsgRouter router message to service
 type MsgRouter struct {
 	conf      *goini.Config
 	repAddr   string
@@ -36,8 +38,7 @@ func (m *MsgRouter) init() {
 
 	// Create Rep Server
 	m.repAddr = m.conf.GetStr("monitor", "rep_addr")
-	m.s = csp.NewRepService(m.repAddr, m)
-	m.s.SetUnPack(false)
+	csp.NewRepService(m.repAddr, m)
 	log.Info("MsgRouter bind %s", m.repAddr)
 
 	// Create Publish Server
@@ -69,6 +70,7 @@ func (m *MsgRouter) setRouterMap() {
 	m.routermap["PMS"] = csp.NewReqClient(pmsServiceAddr)
 }
 
+// HandleBReq route message to different service
 func (m *MsgRouter) HandleBReq(req []byte) (rep []byte) {
 	log.Info("MsgRouter recv : %d, %s", time.Now().UnixNano()/1e6, string(req))
 	if (5 + int(req[4]&0x0F)) > len(req) {
@@ -91,11 +93,7 @@ func (m *MsgRouter) HandleBReq(req []byte) (rep []byte) {
 	return
 }
 
-func (m *MsgRouter) HandleReq(req csp.Request) (rep csp.Response) {
-	// do nothing
-	return
-}
-
+// run publish message got from m.pull
 func (m *MsgRouter) run() {
 	for {
 		data, _ := m.pull.RecvBytes(0)

@@ -11,7 +11,7 @@ import (
 	"quant/emsmodule/algorithm"
 	emsbase "quant/emsmodule/base"
 	"quant/helper"
-	rms "quant/rmsmodule"
+	"util/csp"
 	// "time"
 )
 
@@ -26,10 +26,11 @@ type emsModule struct {
 	conf      *goini.Config
 	algorithm algorithm.Admin
 	running   bool
+	rmsclient *csp.ReqClient
 }
 
-// NewEMSModule create emsModule
-func NewEMSModule() *emsModule {
+// newEMSModule create emsModule
+func newEMSModule() *emsModule {
 	ems := emsModule{}
 	ems.init()
 	return &ems
@@ -38,10 +39,10 @@ func NewEMSModule() *emsModule {
 func (ems *emsModule) init() {
 	ems.conf = goini.SetConfig(helper.QuantConfigFile)
 	ems.running = false
+	ems.rmsclient = csp.NewReqClient(ems.conf.GetStr("riskmodule", "rep_addr"))
 	ems.pullAddr = ems.conf.GetStr(helper.ConfigEMSSessionName, helper.ConfigEMSPullAddr)
 	ems.portQueue = queue.NewRingBuffer(uint64(ems.conf.GetInt(helper.ConfigEMSSessionName, helper.ConfigEMSPortQueueLen)))
 	ems.algorithm = algorithm.Admin{Portqueue: ems.portQueue}
-
 	ems.algorithm.Init()
 	go ems.algorithm.Run()
 
@@ -71,6 +72,25 @@ func (ems *emsModule) stop() {
 	ems.running = false
 }
 
+func (ems *emsModule) checkPort(port *emsbase.Portfolio) bool {
+	req := csp.Request{
+		TO:   "RMS",
+		FROM: "EMS",
+		CMD:  "checkPort",
+	}
+	bport, _ := msgpack.Marshal(port)
+	req.PARAMS = append(req.PARAMS, string(bport))
+	breq, _ := msgpack.Marshal(req)
+	brep := ems.rmsclient.RequestB(breq)
+
+	var rep csp.Response
+	msgpack.Unmarshal(brep, &rep)
+	if rep.RET == 0 {
+		return true
+	}
+	return false
+}
+
 func (ems *emsModule) run(wc chan int) {
 	ems.running = true
 	for ems.running {
@@ -80,7 +100,7 @@ func (ems *emsModule) run(wc chan int) {
 		if err != nil {
 			log.Error("EMS msgpack unmarshal portfolio failed.")
 		} else {
-			if Isvaild, _ := rms.CheckPort(&port); Isvaild {
+			if Isvaild := ems.checkPort(&port); Isvaild {
 				log.Info("%v", port)
 				// arithmetic trade
 				ems.portQueue.Put(port)
@@ -94,7 +114,7 @@ func (ems *emsModule) run(wc chan int) {
 
 func main() {
 	log.Info("EMS Start")
-	ems := NewEMSModule()
+	ems := newEMSModule()
 	wc := make(chan int)
 	go ems.run(wc)
 	<-wc

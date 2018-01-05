@@ -20,3 +20,7 @@ const (
 	ActionMail int = 1
 	ActionStop int = 2
 )
+
+type RiskNoRep struct {
+	ID string
+}

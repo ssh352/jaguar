@@ -6,6 +6,7 @@ import (
 	"github.com/vmihailenco/msgpack"
 	"github.com/widuu/goini"
 	"quant/hqmodule/base"
+	"time"
 	redis "util/redis"
 )
 
@@ -60,4 +61,13 @@ func GetQuotes(codes []string) (map[string]hqbase.Marketdata, error) {
 		quotemap[codes[i]] = mkdat
 	}
 	return quotemap, nil
+}
+
+// InitLogFile set log files name
+func InitLogFile(name string) {
+	logfiles := make(map[string]string)
+	logfiles["ERROR"] = fmt.Sprintf("%s_err%s.log", name, time.Now().Format("2006-01-02"))
+	logfiles["INFO"] = fmt.Sprintf("%s_info%s.log", name, time.Now().Format("2006-01-02"))
+	log.SetLogFiles(logfiles)
+	log.LoadConfiguration(QuantLogConfigFile)
 }
