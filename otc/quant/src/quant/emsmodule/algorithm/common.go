@@ -2,11 +2,12 @@ package algorithm
 
 import (
 	"fmt"
+	emsbase "quant/emsmodule/base"
+	"quant/helper"
+
 	log "github.com/thinkboy/log4go"
 	"github.com/vmihailenco/msgpack"
 	"github.com/widuu/goini"
-	emsbase "quant/emsmodule/base"
-	"quant/helper"
 	// omsbase "quant/omsmodule/base"
 	"strconv"
 	// "time"
