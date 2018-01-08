@@ -10,6 +10,7 @@ import (
 	log "github.com/thinkboy/log4go"
 	"github.com/vmihailenco/msgpack"
 	"github.com/widuu/goini"
+	"time"
 )
 
 // twap algorithm trade.
@@ -44,25 +45,36 @@ func (c *twap) init() {
 // Trade is called by algorithm/admin.go.
 func (c *twap) trade(p emsbase.Portfolio) error {
 	var thirdreffs []string
-
+	var e emsbase.Entrust
+	execution := &emsbase.ExecutionOrder{
+		StrategyName: p.StrategyName,
+		TacticID   : p.TacticID,
+		Algorithm        : p.Algorithm,
+		AccountCode : p.AccountID,      
+		BusinessTime     : time.Now().Format("15:04:05"),
+	}
 	num := len(p.FutureEntrusts) + len(p.SecurityEntrusts)
 	if num > 1{
-
-	}else{
-		if len(p.FutureEntrusts) == 0 {
-			excetions[p.TacticID] = emsbase.ExecutionOrder{
-			StrategyName: p.StrategyName,
-			TacticID   : p.TacticID,
-			Algorithm        : p.Algorithm,
-			OperatorNo       : p.OperatorNo,
-			AccountCode : p.AccountID,      
-			// StockCode        : p.
-			
-			BusinessTime     : 
-			EntrustDirection :
-			EntrustAmount    :        
-			FuturesDirection :
+		execution.StockCode = "BASKET"
+		execution.EntrustAmount = num
+		if len(p.FutureEntrusts) >= 1 {
+			e = p.FutureEntrusts[0]
+		}else{
+			e = p.SecurityEntrusts[0]
 		}
+		execution.OpenCloseFlag = e.OpenCloseFlag
+		execution.Single = false
+	}else{
+		if len(p.FutureEntrusts) == 1 {
+			e = p.FutureEntrusts[0]
+		}else{
+			e = p.SecurityEntrusts[0]
+		}
+		execution.StockCode        = e.StockCode
+		execution.EntrustDirection = e.BS
+		execution.EntrustAmount  = e.Vol
+		execution.OpenCloseFlag = e.OpenCloseFlag
+		execution.Single = true
 	}
 
 	for _, e := range p.SecurityEntrusts {

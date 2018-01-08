@@ -81,13 +81,17 @@ func (admin *Admin) Run() {
 // FuturesDirection string  //开平方向
 func (admin *Admin) UpdateExcutionOrder(){
 	for{
-		for i, v := range entrusts{
+		for _, ent := range entrusts{
 			// entrusts key is order ref
 			// excetions key is tacticid
-			// case1 one tacticid -> one instrument
+			if e, ok := excetions[v.TacticID]; ok{
+				if e.SingleEntrust {
+				// case1 one tacticid -> one instrument
 
-			// case2 one tacticid -> multi instruments
-			
+				}else{
+					// case2 one tacticid -> multi instruments
+				}
+			}
 		}
 	}
 }
