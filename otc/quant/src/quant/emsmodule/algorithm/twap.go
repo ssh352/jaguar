@@ -50,7 +50,7 @@ func (c *twap) trade(p emsbase.Portfolio) error {
 
 	}else{
 		if len(p.FutureEntrusts) == 0 {
-		excetions[p.TacticID] = emsbase.ExecutionOrder{
+			excetions[p.TacticID] = emsbase.ExecutionOrder{
 			StrategyName: p.StrategyName,
 			TacticID   : p.TacticID,
 			Algorithm        : p.Algorithm,
