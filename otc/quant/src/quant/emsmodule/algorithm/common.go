@@ -48,7 +48,7 @@ func (c *common) trade(p emsbase.Portfolio) error {
 			thirdreff := strconv.FormatInt(e.ID, 10)
 			thirdreffs = append(thirdreffs, thirdreff)
 			entrusts[thirdreff] = &emsbase.StrategyEntrust{StrategyInfo: p.StrategyInfo, ProductInfo: p.ProductInfo}
-			itrade.LimitEntrust(e, p.AccountID, p.CombiNo)
+			itrade.LimitEntrust(e, p .AccountID, p.CombiNo)
 		} else {
 			return fmt.Errorf("Common algorithm can't find \"%s\" trade adapter", p.AdapterName)
 		}

@@ -2,31 +2,69 @@ package algorithm
 
 import (
 	"fmt"
-	log "github.com/thinkboy/log4go"
-	"github.com/vmihailenco/msgpack"
-	"github.com/widuu/goini"
 	"quant/emsmodule/base"
 	"quant/helper"
 	"strconv"
 	"util/csp"
+
+	log "github.com/thinkboy/log4go"
+	"github.com/vmihailenco/msgpack"
+	"github.com/widuu/goini"
 )
 
 // twap algorithm trade.
 type twap struct {
-	omsclient        *csp.ReqClient
-	tradeingStrategy map[string][]string
+	omsclient          *csp.ReqClient
+	tradeingStrategy   map[string][]string
+	conf               *goini.Config
+	vollimit           int
+	volratio           float64
+	tradeunit          int
+	waitfortrade       float64
+	waitforappendtrade float64
+	appendratio        float64
+	appendnum          int
 }
 
 func (c *twap) init() {
 	// TacticID->(thirdreff1,thirdreff2,...,thirdreffn)
 	c.tradeingStrategy = make(map[string][]string, 100)
-	conf := goini.SetConfig(helper.QuantConfigFile)
-	c.omsclient = csp.NewReqClient(conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSReqAddr))
+	c.conf = goini.SetConfig(helper.QuantConfigFile)
+	c.omsclient = csp.NewReqClient(c.conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSReqAddr))
+
+	c.vollimit = c.conf.GetInt("twap", "vollimit")
+	c.volratio = c.conf.GetFloat64("twap", "volratio")
+	c.tradeunit = c.conf.GetInt("twap", "tradeunit")
+	c.waitfortrade = c.conf.GetFloat64("twap", "waitfortrade")
+	c.waitforappendtrade = c.conf.GetFloat64("twap", "waitforappendtrade")
+	c.appendratio = c.conf.GetFloat64("twap", "appendratio")
+	c.appendnum = c.conf.GetInt("twap", "appendnum")
 }
 
 // Trade is called by algorithm/admin.go.
 func (c *twap) trade(p emsbase.Portfolio) error {
 	var thirdreffs []string
+
+	num := len(p.FutureEntrusts) + len(p.SecurityEntrusts)
+	if num > 1{
+
+	}else{
+		if len(p.FutureEntrusts) == 0 {
+		excetions[p.TacticID] = emsbase.ExecutionOrder{
+			StrategyName: p.StrategyName,
+			TacticID   : p.TacticID,
+			Algorithm        : p.Algorithm,
+			OperatorNo       : p.OperatorNo,
+			AccountCode : p.AccountID,      
+			// StockCode        : p.
+			
+			BusinessTime     : 
+			EntrustDirection :
+			EntrustAmount    :        
+			FuturesDirection :
+		}
+	}
+
 	for _, e := range p.SecurityEntrusts {
 		itrade, ok := adaptersMap[p.AdapterName]
 		if ok {

@@ -66,7 +66,6 @@ func (admin *Admin) Run() {
 	}
 }
 
-
 // StrategyName     string  //策略名称
 // TacticID         string  //策略ID
 // Algorithm        string  //算法
@@ -88,7 +87,7 @@ func (admin *Admin) UpdateExcutionOrder(){
 			// case1 one tacticid -> one instrument
 
 			// case2 one tacticid -> multi instruments
-
+			
 		}
 	}
 }

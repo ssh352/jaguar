@@ -1,6 +1,6 @@
 package ufxapi
 
-//#cgo CFLAGS:  -I E:/jaguar/sandbox/C++/ufxapi/ufxapi
+//#cgo CFLAGS:  -I D:/workspace/jaguar/otc/quant/ufxapi/ufxapi
 //#include "response.h"
 import "C"
 import (

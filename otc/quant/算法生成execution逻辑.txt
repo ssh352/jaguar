@@ -1,0 +1,33 @@
+
+
+one tacitcid -> one instrument
+one tacitcid -> muluti instrument
+
+
+(1)algo 判断 期货与股票队列长度总和
+(2)==1, one instrument
+// StrategyName     string  //策略名称
+// TacticID         string  //策略ID
+// Algorithm        string  //算法
+// OperatorNo       string  //操作员
+// StockCode        string  //证券代码
+// AccountCode      string  //账户编号
+// BusinessTime     int     //委托时间
+// EntrustDirection string  //委托方向
+// EntrustAmount    int     //委托数量
+// DealAmount       int     //成交数量
+// FuturesDirection string  //开平方向
+(3)>=2, muluti instrument
+// StrategyName     string  //策略名称
+// TacticID         string  //策略ID
+// Algorithm        string  //算法
+// OperatorNo       string  //操作员
+// StockCode        string  //basket
+// AccountCode      string  //账户编号
+// BusinessTime     int     //委托时间
+// EntrustDirection string  //委托方向
+// EntrustAmount    int             //  下单标的总数
+// DealAmount       int             //  成交标的总数
+// DealBalance      float64         //  成交金额
+// DealPrice        float64 // 0
+// FuturesDirection string  //开平方向
