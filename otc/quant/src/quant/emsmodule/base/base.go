@@ -15,14 +15,15 @@ type ExecutionOrder struct {
 	Algorithm        string  //算法
 	StockCode        string  //证券代码
 	AccountCode      string  //账户编号
-	BusinessTime     string   //委托时间
-	EntrustDirection int  //委托方向
+	BusinessTime     string  //委托时间
+	EntrustDirection int     //委托方向
 	EntrustAmount    int     //委托数量
 	DealAmount       int     //成交数量
 	DealBalance      float64 //成交金额
 	DealPrice        float64 //成交均价
-	OpenCloseFlag 	int  //开平方向
-	Single	bool // 单笔委托标识
+	OpenCloseFlag    int     //开平方向
+	Single           bool    //单笔委托标识
+	EntrustStatus    string  //委托状态【running/canceled/finish】
 }
 
 // StrategyInfo struct contains strategy information

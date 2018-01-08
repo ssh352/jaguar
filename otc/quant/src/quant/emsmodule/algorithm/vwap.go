@@ -1,4 +1,4 @@
 package algorithm
 
-type Vwap struct {
+type vwap struct {
 }

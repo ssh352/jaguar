@@ -1,7 +1,6 @@
 package main
 
 import (
-	// "fmt"
 	zmq "github.com/pebbe/zmq3"
 	log "github.com/thinkboy/log4go"
 	"github.com/vmihailenco/msgpack"
@@ -68,6 +67,10 @@ func (m *MsgRouter) setRouterMap() {
 	pmsServiceAddr := m.conf.GetStr("pmsmodule", "rep_addr")
 	log.Info("PMS Client connect to %s", pmsServiceAddr)
 	m.routermap["PMS"] = csp.NewReqClient(pmsServiceAddr)
+
+	emsServiceAddr := m.conf.GetStr("emsmodule", "rep_addr")
+	log.Info("EMS Client connect to %s", emsServiceAddr)
+	m.routermap["EMS"] = csp.NewReqClient(pmsServiceAddr)
 }
 
 // HandleBReq route message to different service

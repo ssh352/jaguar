@@ -20,8 +20,8 @@ import (
 //params[6]: AccountID
 //params[7]: CombiNo
 func NewDeltaHedge(params []string) (pmsbase.IStrategy, error) {
-	if len(params) != 8 {
-		return nil, fmt.Errorf("NewDeltaHedge need 8 params, but get %d", len(params))
+	if len(params) != 13 {
+		return nil, fmt.Errorf("NewDeltaHedge need 13 params, but get %d", len(params))
 	}
 
 	RiskAversionRation, _ := strconv.ParseFloat(params[1], 64)

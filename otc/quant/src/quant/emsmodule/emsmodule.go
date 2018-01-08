@@ -12,11 +12,16 @@ import (
 	emsbase "quant/emsmodule/base"
 	"quant/helper"
 	"util/csp"
-	// "time"
 )
 
 func init() {
-	log.LoadConfiguration(helper.QuantLogConfigFile)
+	helper.InitLogFile("ems")
+	// name := "ems"
+	// logfiles := make(map[string]string)
+	// logfiles["ERROR"] = fmt.Sprintf("%s_err%s.log", name, time.Now().Format("2006-01-02"))
+	// logfiles["INFO"] = fmt.Sprintf("%s_info%s.log", name, time.Now().Format("2006-01-02"))
+	// log.SetLogFiles(logfiles)
+	// log.LoadConfiguration(helper.QuantLogConfigFile)
 }
 
 type emsModule struct {
@@ -44,9 +49,10 @@ func (ems *emsModule) init() {
 	ems.portQueue = queue.NewRingBuffer(uint64(ems.conf.GetInt(helper.ConfigEMSSessionName, helper.ConfigEMSPortQueueLen)))
 	ems.algorithm = algorithm.Admin{Portqueue: ems.portQueue}
 	ems.algorithm.Init()
-	go ems.algorithm.Run()
 
+	go ems.algorithm.Run()
 	ems.listenPort()
+
 }
 
 func (ems *emsModule) listenPort() {
@@ -117,6 +123,7 @@ func main() {
 	ems := newEMSModule()
 	wc := make(chan int)
 	go ems.run(wc)
+
 	<-wc
 	ems.release()
 	log.Info("EMS Exit")

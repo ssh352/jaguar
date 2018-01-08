@@ -16,7 +16,6 @@ var (
 )
 
 func init() {
-	log.LoadConfiguration(helper.QuantLogConfigFile)
 	conf = goini.SetConfig(helper.QuantConfigFile)
 	pushAddr = conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSPullAddr)
 	push, _ = zmq.NewSocket(zmq.PUSH)

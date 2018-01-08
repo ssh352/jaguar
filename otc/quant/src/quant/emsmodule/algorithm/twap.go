@@ -15,9 +15,11 @@ import (
 
 // twap algorithm trade.
 type twap struct {
-	omsclient          *csp.ReqClient
-	tradeingStrategy   map[string][]string
-	conf               *goini.Config
+	omsclient        *csp.ReqClient
+	tradeingStrategy map[string][]string
+	conf             *goini.Config
+
+	// trading params
 	vollimit           int
 	volratio           float64
 	tradeunit          int
@@ -33,6 +35,7 @@ func (c *twap) init() {
 	c.conf = goini.SetConfig(helper.QuantConfigFile)
 	c.omsclient = csp.NewReqClient(c.conf.GetStr(helper.ConfigOMSSessionName, helper.ConfigOMSReqAddr))
 
+	// get trade params from conf
 	c.vollimit = c.conf.GetInt("twap", "vollimit")
 	c.volratio = c.conf.GetFloat64("twap", "volratio")
 	c.tradeunit = c.conf.GetInt("twap", "tradeunit")
@@ -45,38 +48,42 @@ func (c *twap) init() {
 // Trade is called by algorithm/admin.go.
 func (c *twap) trade(p emsbase.Portfolio) error {
 	var thirdreffs []string
+
+	// cache execution order
 	var e emsbase.Entrust
 	execution := &emsbase.ExecutionOrder{
-		StrategyName: p.StrategyName,
-		TacticID   : p.TacticID,
-		Algorithm        : p.Algorithm,
-		AccountCode : p.AccountID,      
-		BusinessTime     : time.Now().Format("15:04:05"),
+		StrategyName:  p.StrategyName,
+		TacticID:      p.TacticID,
+		Algorithm:     p.Algorithm,
+		AccountCode:   p.AccountID,
+		BusinessTime:  time.Now().Format("15:04:05"),
+		EntrustStatus: "RUNNING",
 	}
 	num := len(p.FutureEntrusts) + len(p.SecurityEntrusts)
-	if num > 1{
+	if num > 1 {
 		execution.StockCode = "BASKET"
 		execution.EntrustAmount = num
 		if len(p.FutureEntrusts) >= 1 {
 			e = p.FutureEntrusts[0]
-		}else{
+		} else {
 			e = p.SecurityEntrusts[0]
 		}
 		execution.OpenCloseFlag = e.OpenCloseFlag
 		execution.Single = false
-	}else{
+	} else {
 		if len(p.FutureEntrusts) == 1 {
 			e = p.FutureEntrusts[0]
-		}else{
+		} else {
 			e = p.SecurityEntrusts[0]
 		}
-		execution.StockCode        = e.StockCode
+		execution.StockCode = e.StockCode
 		execution.EntrustDirection = e.BS
-		execution.EntrustAmount  = e.Vol
+		execution.EntrustAmount = e.Vol
 		execution.OpenCloseFlag = e.OpenCloseFlag
 		execution.Single = true
 	}
 
+	// send security entrust to adapter
 	for _, e := range p.SecurityEntrusts {
 		itrade, ok := adaptersMap[p.AdapterName]
 		if ok {
